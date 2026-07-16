@@ -9,7 +9,7 @@ from typing import Optional
 
 import typer
 from pydantic import ValidationError
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -28,8 +28,9 @@ from prompt_gen.formatter import (
     format_list_rows,
 )
 from prompt_gen.generator import build_deepseek_generator
-from prompt_gen.models import PromptRequest
+from prompt_gen.models import PromptRequest, StoredPrompt
 from prompt_gen.store import PromptStore
+from prompt_gen.ui_theme import THEME
 
 PLACEHOLDER_KEYS = frozenset({"sk-your-key-here", "your-key-here", ""})
 
@@ -59,8 +60,8 @@ app = typer.Typer(
     no_args_is_help=False,
     add_completion=False,
 )
-console = Console()
-err_console = Console(stderr=True)
+console = Console(theme=THEME)
+err_console = Console(stderr=True, theme=THEME)
 
 
 def _exit_config(message: str) -> None:
@@ -143,31 +144,95 @@ def _format_validation_error(exc: ValidationError) -> str:
 
 
 def _print_welcome() -> None:
-    lines = [
-        f"prompt-gen v{__version__} · 本地提示词生成器",
-        "",
-        "流程：填写场景 → DeepSeek 生成模板 → 本地保存 → 查看/导出",
-        "",
-        "演示场景：",
-    ]
-    for scenario, goal, audience, constraints in DEMO_EXAMPLES:
-        lines.append(f"  · {scenario} / {goal} / {audience}")
-        lines.append(f"    约束: {constraints}")
-    console.print(Panel("\n".join(lines), title="欢迎", border_style="cyan"))
+    body = Text()
+    body.append("本地提示词生成器 · 终端工作台\n", style="subtitle")
+    body.append("流程：", style="workflow")
+    body.append(
+        "填写场景 → DeepSeek 生成 → 本地保存 → 查看 / 导出\n",
+        style="flow",
+    )
+    body.append("演示场景\n", style="demo_title")
+    for scenario, goal, audience, _ in DEMO_EXAMPLES:
+        body.append("› ", style="user_text")
+        body.append(f"{scenario} → {goal} → ", style="text")
+        body.append(f"{audience}\n", style="muted")
+    console.print(
+        Panel(
+            body,
+            title=f"[brand]✦ prompt-gen v{__version__}[/brand]",
+            border_style="cyan",
+        )
+    )
 
 
 def _print_menu() -> None:
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column(style="bold cyan", width=4)
-    table.add_column()
-    table.add_row("1", "交互生成模板（推荐新手）")
-    table.add_row("2", "列出本地模板")
-    table.add_row("3", "查看模板详情")
-    table.add_row("4", "导出为 Markdown")
-    table.add_row("5", "检查环境配置 (doctor)")
-    table.add_row("0", "退出")
-    console.print(table)
-    console.print("[dim]也可直接: prompt-gen generate | list | show | export | doctor[/dim]")
+    items = [
+        ("1", "交互生成模板（推荐新手）"),
+        ("2", "列出本地模板"),
+        ("3", "查看模板详情"),
+        ("4", "导出为 Markdown"),
+        ("5", "检查环境配置 (doctor)"),
+        ("0", "退出"),
+    ]
+    lines: list[Text] = []
+    for key, label in items:
+        line = Text()
+        line.append(f"[{key}] ", style="key")
+        line.append(label, style="text")
+        lines.append(line)
+    console.print(Group(*lines))
+    console.print(
+        "[muted]也可直接: prompt-gen generate | list | show | export | doctor[/muted]"
+    )
+
+
+def _render_generated(stored: StoredPrompt) -> Panel:
+    """生成结果面板：左侧青色竖线 + 元信息 + System/User 代码块。"""
+    source = stored.source
+    template = stored.template
+
+    pairs: list[tuple[str, str]] = [("场景", source.scenario), ("目标", source.goal)]
+    if source.audience:
+        pairs.append(("受众", source.audience))
+    if source.constraints:
+        pairs.append(("约束", " · ".join(source.constraints)))
+
+    meta_rows: list[Text] = []
+    name_row = Text()
+    name_row.append("名称  ", style="meta_key")
+    name_row.append(template.name, style="meta_val")
+    meta_rows.append(name_row)
+    for key, value in pairs:
+        row = Text()
+        row.append(f"{key}  ", style="meta_key")
+        row.append(value, style="meta_val")
+        meta_rows.append(row)
+
+    sys_block = Panel(
+        Text(template.system_prompt, style="sys_text"),
+        border_style="muted",
+        padding=(1, 1),
+    )
+    user_block = Panel(
+        Text(template.user_prompt_template, style="user_text"),
+        border_style="muted",
+        padding=(1, 1),
+    )
+
+    title = Text()
+    title.append("✓ 已生成：", style="cyan")
+    title.append(stored.id, style="cyan bold")
+
+    content = Group(
+        *meta_rows,
+        Text(),
+        Text("System Prompt", style="sys_label"),
+        sys_block,
+        Text(),
+        Text("User Prompt Template", style="user_label"),
+        user_block,
+    )
+    return Panel(content, title=title, border_style="cyan")
 
 
 def run_interactive_menu() -> None:
@@ -281,13 +346,15 @@ def doctor() -> None:
         )
     )
 
-    table = Table(title="环境检查", show_header=True, header_style="bold")
+    table = Table(title="[brand]环境检查[/brand]", show_header=True, header_style="bold")
     table.add_column("项目")
-    table.add_column("状态", width=4)
+    table.add_column("状态", width=4, justify="center")
     table.add_column("说明")
     for name, status, detail in rows:
-        style = "green" if status == "OK" else "red"
-        table.add_row(name, f"[{style}]{status}[/{style}]", detail)
+        ok = status == "OK"
+        style = "ok" if ok else "bad"
+        glyph = "✓" if ok else "✗"
+        table.add_row(name, Text(glyph, style=style), f"[{style}]{status}[/]  {detail}")
     console.print(table)
 
     if not key_ok:
@@ -386,10 +453,12 @@ def generate(
         _exit_config(str(exc))
         return
 
-    console.print("[dim]正在调用 DeepSeek 生成结构化模板…[/dim]")
     gen = build_deepseek_generator(settings)
     try:
-        template = gen.generate(request)
+        with console.status(
+            "[cyan]正在调用 DeepSeek 生成结构化模板…[/cyan]", spinner="dots"
+        ):
+            template = gen.generate(request)
     except PromptGenerationError as exc:
         _exit_api(str(exc))
         return
@@ -401,18 +470,12 @@ def generate(
         _exit_data(str(exc))
         return
 
-    console.print(
-        Panel(
-            Text(format_export_markdown(stored).rstrip()),
-            title=Text(f"已生成 · {stored.id}"),
-            border_style="green",
-        )
-    )
+    console.print(_render_generated(stored))
     console.print(f"已保存: {store.data_dir / f'{stored.id}.json'}")
     console.print(
-        f"下一步: [bold]prompt-gen show {stored.id}[/bold]  ·  "
-        f"[bold]prompt-gen export {stored.id}[/bold]  ·  "
-        f"[bold]prompt-gen list[/bold]"
+        f"下一步: [brand]prompt-gen show {stored.id}[/brand]  ·  "
+        f"[brand]prompt-gen export {stored.id}[/brand]  ·  "
+        f"[brand]prompt-gen list[/brand]"
     )
 
 

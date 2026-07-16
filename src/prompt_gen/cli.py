@@ -23,9 +23,8 @@ from prompt_gen.exceptions import (
     PromptNotFoundError,
 )
 from prompt_gen.formatter import (
-    format_detail_text,
+    _as_utc,
     format_export_markdown,
-    format_list_rows,
 )
 from prompt_gen.generator import build_deepseek_generator
 from prompt_gen.models import PromptRequest, StoredPrompt
@@ -233,6 +232,58 @@ def _render_generated(stored: StoredPrompt) -> Panel:
         user_block,
     )
     return Panel(content, title=title, border_style="cyan")
+
+
+def _render_detail(stored: StoredPrompt) -> Panel:
+    """详情展示：与生成结果一致的分区样式。"""
+    source = stored.source
+    template = stored.template
+
+    pairs: list[tuple[str, str]] = [("场景", source.scenario), ("目标", source.goal)]
+    if source.audience:
+        pairs.append(("受众", source.audience))
+    if source.constraints:
+        pairs.append(("约束", " · ".join(source.constraints)))
+
+    blocks: list = []
+    for key, value in pairs:
+        row = Text()
+        row.append(f"{key}  ", style="meta_key")
+        row.append(value, style="meta_val")
+        blocks.append(row)
+
+    blocks.append(Text())
+    blocks.append(Text("System Prompt", style="sys_label"))
+    blocks.append(
+        Panel(Text(template.system_prompt, style="sys_text"), border_style="muted", padding=(1, 1))
+    )
+    blocks.append(Text())
+    blocks.append(Text("User Prompt Template", style="user_label"))
+    blocks.append(
+        Panel(Text(template.user_prompt_template, style="user_text"), border_style="muted", padding=(1, 1))
+    )
+
+    if template.variables:
+        chips = Text()
+        for var in template.variables:
+            chips.append(f" {var} ", style="cyan reverse")
+            chips.append("  ")
+        blocks.append(Text())
+        blocks.append(Text("Variables", style="sys_label"))
+        blocks.append(chips)
+
+    if template.notes:
+        blocks.append(Text())
+        blocks.append(Text("Notes", style="sys_label"))
+        blocks.append(
+            Panel(Text(template.notes, style="text"), border_style="muted", padding=(1, 1))
+        )
+
+    title = Text()
+    title.append(stored.template.name, style="cyan bold")
+    title.append(f"  ·  {stored.id}", style="muted")
+
+    return Panel(Group(*blocks), title=title, border_style="cyan")
 
 
 def run_interactive_menu() -> None:
@@ -503,15 +554,26 @@ def list_prompts() -> None:
         )
         return
 
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("ID", style="cyan", no_wrap=True)
-    table.add_column("名称")
-    table.add_column("创建时间", style="dim", no_wrap=True)
-    for prompt_id, name, created in format_list_rows(items):
-        table.add_row(prompt_id, name, created)
+    table = Table(
+        title=f"[brand]本地模板[/brand]  [muted]({len(items)})[/muted]",
+        show_header=True,
+        header_style="bold",
+        title_justify="left",
+    )
+    table.add_column("ID", style="key", no_wrap=True)
+    table.add_column("名称", style="text")
+    table.add_column("场景", style="muted")
+    table.add_column("创建时间", style="muted", no_wrap=True)
+    for stored in items:
+        table.add_row(
+            stored.id,
+            stored.template.name,
+            stored.source.scenario,
+            _as_utc(stored.created_at).strftime("%Y-%m-%d %H:%M"),
+        )
     console.print(table)
     console.print(
-        "[dim]查看: prompt-gen show <id>  ·  导出: prompt-gen export <id>[/dim]"
+        "[muted]查看: prompt-gen show <id>  ·  导出: prompt-gen export <id>[/muted]"
     )
 
 
@@ -528,15 +590,9 @@ def show(prompt_id: str = typer.Argument(..., help="模板 ID（可用 list 查�
         _exit_data(str(exc))
         return
 
+    console.print(_render_detail(stored))
     console.print(
-        Panel(
-            Text(format_detail_text(stored).rstrip()),
-            title=Text(stored.template.name),
-            border_style="cyan",
-        )
-    )
-    console.print(
-        f"[dim]导出: prompt-gen export {stored.id}[/dim]"
+        f"[muted]导出: prompt-gen export {stored.id}[/muted]"
     )
 
 

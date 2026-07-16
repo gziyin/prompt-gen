@@ -45,6 +45,16 @@ prompt-gen
 
 不做：Agent、RAG、Web UI、多用户、云端同步。
 
+## 终端界面风格
+
+基于 [rich](https://rich.readthedocs.io/) 的 Tokyo Night 配色，统一视觉语言（配色集中在 `src/prompt_gen/ui_theme.py`，便于整体调整）：
+
+- **欢迎 / 菜单**：青色品牌标题 `✦ prompt-gen`、紫色工作流说明、黄色演示场景，菜单为青色 `[1]`–`[0]` 键帽。
+- **生成中**：调用 DeepSeek 时显示 cyan spinner 状态行。
+- **结果 / 详情面板**：左侧青色竖线面板，含元信息（场景 / 目标 / 受众 / 约束）、`System Prompt` 与 `User Prompt Template` 深色代码块、变量标签，以及可选的 Notes。
+- **环境检查 (`doctor`)**：`✓` / `✗` 配合绿 / 红着色。
+- **列表 (`list`)**：青色 ID、名称、场景与创建时间分区表格，标题带模板计数。
+
 ## 环境要求
 
 - Python 3.13+

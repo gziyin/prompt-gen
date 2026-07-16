@@ -29,7 +29,7 @@ from prompt_gen.formatter import (
 from prompt_gen.generator import build_deepseek_generator
 from prompt_gen.models import PromptRequest, StoredPrompt
 from prompt_gen.store import PromptStore
-from prompt_gen.ui_theme import THEME
+from prompt_gen.ui_theme import PANEL_STYLE, THEME
 
 PLACEHOLDER_KEYS = frozenset({"sk-your-key-here", "your-key-here", ""})
 
@@ -101,6 +101,7 @@ def _print_setup_hint() -> None:
             ),
             title="上手提示",
             border_style="yellow",
+            style=PANEL_STYLE,
         )
     )
 
@@ -160,6 +161,7 @@ def _print_welcome() -> None:
             body,
             title=f"[brand]✦ prompt-gen v{__version__}[/brand]",
             border_style="cyan",
+            style=PANEL_STYLE,
         )
     )
 
@@ -211,11 +213,13 @@ def _render_generated(stored: StoredPrompt) -> Panel:
         Text(template.system_prompt, style="sys_text"),
         border_style="muted",
         padding=(1, 1),
+        style=PANEL_STYLE,
     )
     user_block = Panel(
         Text(template.user_prompt_template, style="user_text"),
         border_style="muted",
         padding=(1, 1),
+        style=PANEL_STYLE,
     )
 
     title = Text()
@@ -231,7 +235,7 @@ def _render_generated(stored: StoredPrompt) -> Panel:
         Text("User Prompt Template", style="user_label"),
         user_block,
     )
-    return Panel(content, title=title, border_style="cyan")
+    return Panel(content, title=title, border_style="cyan", style=PANEL_STYLE)
 
 
 def _render_detail(stored: StoredPrompt) -> Panel:
@@ -255,12 +259,22 @@ def _render_detail(stored: StoredPrompt) -> Panel:
     blocks.append(Text())
     blocks.append(Text("System Prompt", style="sys_label"))
     blocks.append(
-        Panel(Text(template.system_prompt, style="sys_text"), border_style="muted", padding=(1, 1))
+        Panel(
+            Text(template.system_prompt, style="sys_text"),
+            border_style="muted",
+            padding=(1, 1),
+            style=PANEL_STYLE,
+        )
     )
     blocks.append(Text())
     blocks.append(Text("User Prompt Template", style="user_label"))
     blocks.append(
-        Panel(Text(template.user_prompt_template, style="user_text"), border_style="muted", padding=(1, 1))
+        Panel(
+            Text(template.user_prompt_template, style="user_text"),
+            border_style="muted",
+            padding=(1, 1),
+            style=PANEL_STYLE,
+        )
     )
 
     if template.variables:
@@ -276,19 +290,25 @@ def _render_detail(stored: StoredPrompt) -> Panel:
         blocks.append(Text())
         blocks.append(Text("Notes", style="sys_label"))
         blocks.append(
-            Panel(Text(template.notes, style="text"), border_style="muted", padding=(1, 1))
+            Panel(
+                Text(template.notes, style="text"),
+                border_style="muted",
+                padding=(1, 1),
+                style=PANEL_STYLE,
+            )
         )
 
     title = Text()
     title.append(stored.template.name, style="cyan bold")
     title.append(f"  ·  {stored.id}", style="muted")
 
-    return Panel(Group(*blocks), title=title, border_style="cyan")
+    return Panel(Group(*blocks), title=title, border_style="cyan", style=PANEL_STYLE)
 
 
 def run_interactive_menu() -> None:
     """无子命令时进入引导菜单。"""
     _print_welcome()
+    console.print()
     while True:
         _print_menu()
         choice = typer.prompt("请选择", default="1").strip()
@@ -407,6 +427,7 @@ def doctor() -> None:
         glyph = "✓" if ok else "✗"
         table.add_row(name, Text(glyph, style=style), f"[{style}]{status}[/]  {detail}")
     console.print(table)
+    console.print()
 
     if not key_ok:
         console.print(
@@ -453,8 +474,10 @@ def generate(
                 ),
                 title="交互生成",
                 border_style="green",
+                style=PANEL_STYLE,
             )
         )
+        console.print()
         scenario_v = _guided_prompt("场景", example="代码审查")
         goal_v = _guided_prompt("目标", example="找出可靠性问题")
         audience_v = _guided_prompt(
@@ -522,12 +545,15 @@ def generate(
         return
 
     console.print(_render_generated(stored))
-    console.print(f"已保存: {store.data_dir / f'{stored.id}.json'}")
+    console.print()
+    console.print(f"[muted]已保存:[/muted] {store.data_dir / f'{stored.id}.json'}")
+    console.print()
     console.print(
         f"下一步: [brand]prompt-gen show {stored.id}[/brand]  ·  "
         f"[brand]prompt-gen export {stored.id}[/brand]  ·  "
         f"[brand]prompt-gen list[/brand]"
     )
+    console.print()
 
 
 @app.command("list")
@@ -550,6 +576,7 @@ def list_prompts() -> None:
                 "  · [bold].\\start.ps1[/bold]         一键启动",
                 title="空列表",
                 border_style="yellow",
+                style=PANEL_STYLE,
             )
         )
         return
@@ -572,9 +599,11 @@ def list_prompts() -> None:
             _as_utc(stored.created_at).strftime("%Y-%m-%d %H:%M"),
         )
     console.print(table)
+    console.print()
     console.print(
         "[muted]查看: prompt-gen show <id>  ·  导出: prompt-gen export <id>[/muted]"
     )
+    console.print()
 
 
 @app.command()
@@ -591,9 +620,11 @@ def show(prompt_id: str = typer.Argument(..., help="模板 ID（可用 list 查�
         return
 
     console.print(_render_detail(stored))
+    console.print()
     console.print(
         f"[muted]导出: prompt-gen export {stored.id}[/muted]"
     )
+    console.print()
 
 
 @app.command("export")
@@ -623,7 +654,9 @@ def export_prompt(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(text, encoding="utf-8")
     console.print(f"[green]已导出:[/green] {target}")
+    console.print()
     console.print("[dim]可用编辑器打开该 Markdown，或继续 prompt-gen list[/dim]")
+    console.print()
 
 
 if __name__ == "__main__":

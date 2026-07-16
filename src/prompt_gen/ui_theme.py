@@ -11,6 +11,7 @@ from rich.theme import Theme
 # ── 调色板 ──────────────────────────────────────────────
 BG = "#1a1b26"          # 终端背景
 PANEL = "#16161e"       # 面板背景
+PANEL_STYLE = f"on {PANEL}"  # rich Panel 内容区背景
 CYAN = "#39d3c3"        # 品牌 / 键帽 / 成功 / 竖线
 PURPLE = "#bb9af7"      # 工作流标签 / System·User 分区标题
 BLUE = "#7aa2f7"        # 工作流文本

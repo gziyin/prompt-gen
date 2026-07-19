@@ -1,6 +1,6 @@
-# 本地提示词生成器 CLI
+# 本地提示词优化器 CLI
 
-根据场景、目标、受众和约束，调用 DeepSeek 生成结构化提示词模板，并支持本地保存、列表、查看与导出。
+输入一段提示词,调用 DeepSeek 优化并输出优化后版本 + 优化说明,自动存入历史,支持列表与导出。
 
 ## 一键启动（推荐）
 
@@ -24,11 +24,10 @@ prompt-gen
 
 | 键 | 作用 |
 |----|------|
-| 1 | 交互生成模板（带示例提示） |
-| 2 | 列出本地模板 |
-| 3 | 查看模板详情 |
-| 4 | 导出 Markdown |
-| 5 | 检查环境 (`doctor`) |
+| 1 | 优化提示词(输入 prompt → 输出优化版 + 说明) |
+| 2 | 历史记录(列出历次优化) |
+| 3 | 导出为 Markdown(按 ID 导出某次对话) |
+| 4 | 检查环境配置 (doctor) |
 | 0 | 退出 |
 
 ## 功能
@@ -37,11 +36,10 @@ prompt-gen
 |------|------|
 | `prompt-gen` | 打开引导菜单 |
 | `prompt-gen doctor` | 检查 .env / API Key / 数据目录 |
-| `prompt-gen generate` | 交互生成（含示例引导） |
-| `prompt-gen generate -s ... -g ...` | 脚本参数生成 |
-| `prompt-gen list` | 按时间倒序列出 |
-| `prompt-gen show <id>` | 查看详情 |
-| `prompt-gen export <id>` | 导出 Markdown |
+| `prompt-gen optimize` | 交互优化(输入 prompt) |
+| `prompt-gen optimize -p ...` | 脚本参数优化 |
+| `prompt-gen history` | 按时间倒序列出优化历史 |
+| `prompt-gen export <id>` | 导出某次对话为 Markdown |
 
 不做：Agent、RAG、Web UI、多用户、云端同步。
 
@@ -49,11 +47,11 @@ prompt-gen
 
 基于 [rich](https://rich.readthedocs.io/) 的 Tokyo Night 配色，统一视觉语言（配色集中在 `src/prompt_gen/ui_theme.py`，便于整体调整）：
 
-- **欢迎 / 菜单**：青色品牌标题 `✦ prompt-gen`、紫色工作流说明、黄色演示场景，菜单为青色 `[1]`–`[0]` 键帽。
-- **生成中**：调用 DeepSeek 时显示 cyan spinner 状态行。
-- **结果 / 详情面板**：左侧青色竖线面板，含元信息（场景 / 目标 / 受众 / 约束）、`System Prompt` 与 `User Prompt Template` 深色代码块、变量标签，以及可选的 Notes。
+- **欢迎 / 菜单**：青色品牌标题 `✦ prompt-gen`、紫色工作流说明,菜单为青色 `[1]`–`[0]` 键帽。
+- **优化中**：调用 DeepSeek 时显示 cyan spinner 状态行。
+- **结果面板**：左侧青色竖线面板,含 `原始提示词` 与 `优化后提示词` 深色代码块,以及可选的 `优化说明`。
 - **环境检查 (`doctor`)**：`✓` / `✗` 配合绿 / 红着色。
-- **列表 (`list`)**：青色 ID、名称、场景与创建时间分区表格，标题带模板计数。
+- **历史 (`history`)**：青色 ID、原始/优化后预览与创建时间表格,标题带记录计数。
 
 ## 环境要求
 
@@ -101,31 +99,28 @@ PROMPT_GEN_EXPORT_DIR=D:\data\prompt_gen\exports
 prompt-gen
 prompt-gen doctor
 
-# 交互生成（带示例）
-prompt-gen generate
+# 交互优化（输入 prompt）
+prompt-gen optimize
 
-# 参数生成（脚本模式须同时提供 --scenario 与 --goal）
-prompt-gen generate `
-  --scenario "代码审查" `
-  --goal "找出可靠性问题" `
-  --audience "Python 开发者" `
-  --constraint "只评代码" `
-  --constraint "给出可复现步骤"
+# 参数优化（脚本模式）
+prompt-gen optimize --prompt "帮我写一段代码审查的提示词"
 
-# 列表 / 查看 / 导出
-prompt-gen list
-prompt-gen show <id>
+# 历史 / 导出
+prompt-gen history
 prompt-gen export <id>
 
 # 等价入口
 python -m prompt_gen
 ```
 
-## 三种演示场景
+## 优化示例
 
-1. **Python 代码审查** — 场景：代码审查；目标：找出可靠性问题；受众：Python 开发者  
-2. **邮件润色** — 场景：商务邮件；目标：语气更专业简洁；受众：职场同事  
-3. **学习笔记总结** — 场景：学习笔记；目标：提炼要点与待办；受众：自己  
+输入:`帮我写代码`
+
+输出(优化后提示词 + 优化说明):
+
+- **优化后**:你是资深工程师,请按以下要求帮我写代码:1. 明确语言与版本 2. 说明输入输出 3. 标注关键边界条件 …
+- **说明**:1. 补充了角色定义 2. 明确了输出要求 3. 规定了边界条件标注
 
 ## 测试
 

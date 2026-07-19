@@ -70,6 +70,26 @@ pip install -e ".[dev]"
 
 也可直接 `.\start.ps1`（首次会自动建 venv 并安装）。
 
+### 让 prompt-gen 全局可用(可选)
+
+默认情况下,`prompt-gen` 命令需在激活 venv 后使用。若想在任意终端直接调用,任选其一:
+
+```powershell
+# 方案 1:永久 — 将 venv 的 Scripts 目录加入用户 PATH
+$venvScripts = (Resolve-Path .\.venv\Scripts).Path
+$current = [Environment]::GetEnvironmentVariable("PATH", "User")
+[Environment]::SetEnvironmentVariable("PATH", "$current;$venvScripts", "User")
+# 重启终端后生效
+
+# 方案 2:临时 — 每次先激活 venv
+.\.venv\Scripts\Activate.ps1
+
+# 方案 3:后备 — 用 python -m 替代
+python -m prompt_gen
+```
+
+运行 `prompt-gen doctor` 可检查命令是否已在 PATH 中。
+
 ## 配置
 
 ```powershell

@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from prompt_gen.adapters.storage.history_store import HistoryStore
-from prompt_gen.cli import app
+from prompt_gen.cli import _resolve_choice, app
 from prompt_gen.ports.llm_provider import LLMRequest, LLMResponse
 
 runner = CliRunner()
@@ -170,3 +170,90 @@ def test_doctor_missing_api_key_exits_2(
     )
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 2
+
+
+# -- _resolve_choice:菜单输入多形式解析 --
+
+
+def test_resolve_choice_digit_shortcut() -> None:
+    assert _resolve_choice("1") == ["optimize"]
+    assert _resolve_choice("2") == ["history"]
+    assert _resolve_choice("3") == ["export"]
+    assert _resolve_choice("4") == ["doctor"]
+
+
+def test_resolve_choice_exit() -> None:
+    assert _resolve_choice("0") == ["__exit__"]
+    assert _resolve_choice("q") == ["__exit__"]
+    assert _resolve_choice("quit") == ["__exit__"]
+    assert _resolve_choice("退出") == ["__exit__"]
+
+
+def test_resolve_choice_chinese_keyword() -> None:
+    assert _resolve_choice("优化") == ["optimize"]
+    assert _resolve_choice("历史") == ["history"]
+    assert _resolve_choice("导出") == ["export"]
+    assert _resolve_choice("检查") == ["doctor"]
+
+
+def test_resolve_choice_command_name() -> None:
+    assert _resolve_choice("optimize") == ["optimize"]
+    assert _resolve_choice("history") == ["history"]
+    assert _resolve_choice("export") == ["export"]
+    assert _resolve_choice("doctor") == ["doctor"]
+
+
+def test_resolve_choice_full_command_with_prompt_gen_prefix() -> None:
+    assert _resolve_choice("prompt-gen optimize") == ["optimize"]
+    assert _resolve_choice("prompt-gen history") == ["history"]
+    assert _resolve_choice("prompt-gen doctor") == ["doctor"]
+
+
+def test_resolve_choice_full_command_with_args() -> None:
+    assert _resolve_choice("prompt-gen export abc123") == ["export", "abc123"]
+    assert _resolve_choice("export abc123") == ["export", "abc123"]
+
+
+def test_resolve_choice_empty_returns_none() -> None:
+    assert _resolve_choice("") is None
+    assert _resolve_choice("   ") is None
+
+
+def test_resolve_choice_invalid_returns_none() -> None:
+    assert _resolve_choice("invalid") is None
+    assert _resolve_choice("abc") is None
+    assert _resolve_choice("prompt-gen") is None
+    assert _resolve_choice("prompt-gen unknown") is None
+
+
+def test_resolve_choice_strips_whitespace() -> None:
+    assert _resolve_choice("  1  ") == ["optimize"]
+    assert _resolve_choice("  optimize  ") == ["optimize"]
+
+
+# -- doctor:命令可用性检查 --
+
+
+def test_doctor_reports_command_available(
+    cli_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """shutil.which 找到 prompt-gen 时,doctor 应报告命令可用。"""
+    monkeypatch.setattr(
+        "prompt_gen.cli.shutil.which", lambda cmd: "/fake/path/prompt-gen"
+    )
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0, result.output
+    assert "命令可用性" in result.output
+    assert "PATH" in result.output
+
+
+def test_doctor_reports_command_missing_with_hint(
+    cli_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """shutil.which 找不到 prompt-gen 时,doctor 应提示 PATH 配置方法。"""
+    monkeypatch.setattr("prompt_gen.cli.shutil.which", lambda cmd: None)
+    result = runner.invoke(app, ["doctor"])
+    assert result.exit_code == 0, result.output
+    assert "命令可用性" in result.output
+    assert "PATH" in result.output
+    assert "永久方案" in result.output or "Activate" in result.output

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
@@ -181,31 +182,88 @@ def _render_optimized(raw_prompt: str, optimized: str, rationale: str | None) ->
     return Panel(Group(*content_parts), title=title, border_style="cyan", style=PANEL_STYLE)
 
 
+def _resolve_choice(choice: str) -> list[str] | None:
+    """将菜单输入解析为子命令参数列表,无法识别返回 None。
+
+    支持多种输入形式:
+    - 数字快捷键:1/2/3/4/0
+    - 中文:优化/历史/导出/检查/退出
+    - 命令名:optimize/history/export/doctor
+    - 完整命令:prompt-gen optimize / prompt-gen export <id>
+    """
+    choice = choice.strip()
+    if not choice:
+        return None
+
+    # 退出
+    if choice in {"0", "q", "quit", "exit", "退出"}:
+        return ["__exit__"]
+
+    # 数字 / 中文快捷键
+    quick_map = {
+        "1": ["optimize"],
+        "2": ["history"],
+        "3": ["export"],
+        "4": ["doctor"],
+        "优化": ["optimize"],
+        "历史": ["history"],
+        "导出": ["export"],
+        "检查": ["doctor"],
+    }
+    if choice in quick_map:
+        return quick_map[choice]
+
+    # 去掉 prompt-gen 前缀(支持 "prompt-gen optimize" 形式)
+    if choice.startswith("prompt-gen "):
+        choice = choice[len("prompt-gen "):].strip()
+    elif choice == "prompt-gen":
+        return None
+
+    # 解析 "命令 [参数...]" 形式
+    parts = choice.split()
+    if not parts:
+        return None
+
+    cmd_map = {
+        "optimize": "optimize",
+        "history": "history",
+        "export": "export",
+        "doctor": "doctor",
+    }
+    cmd = parts[0]
+    if cmd in cmd_map:
+        return [cmd_map[cmd]] + parts[1:]
+
+    return None
+
+
 def run_interactive_menu() -> None:
-    """无子命令时进入引导菜单。"""
+    """无子命令时进入引导菜单。
+
+    支持数字快捷键、中文、命令名、完整命令(prompt-gen xxx)四种输入形式。
+    """
     _print_welcome()
     console.print()
     while True:
         _print_menu()
-        choice = typer.prompt("请选择", default="1").strip()
-        if choice in {"0", "q", "quit", "exit"}:
+        choice = typer.prompt("请选择").strip()
+        resolved = _resolve_choice(choice)
+        if resolved is None:
+            err_console.print(
+                "[yellow]无效选项,请输入 0-4 或命令名(optimize/history/export/doctor)。[/yellow]"
+            )
+            console.print()
+            continue
+        if resolved == ["__exit__"]:
             console.print("已退出。下次可运行 [bold]prompt-gen[/bold] 或 [bold].\\start.ps1[/bold]。")
             return
-        if choice == "1":
-            _typer_invoke(["optimize"])
-            continue
-        if choice == "2":
-            _typer_invoke(["history"])
-            continue
-        if choice == "3":
+        # export 需要 ID,若未提供则交互询问
+        if resolved[0] == "export" and len(resolved) == 1:
             record_id = typer.prompt("记录 ID(可先 history 查看)").strip()
             if record_id:
                 _typer_invoke(["export", record_id])
             continue
-        if choice == "4":
-            _typer_invoke(["doctor"])
-            continue
-        err_console.print("[yellow]无效选项,请输入 0-4。[/yellow]")
+        _typer_invoke(resolved)
 
 
 def _typer_invoke(args: list[str]) -> None:
@@ -423,6 +481,19 @@ def doctor() -> None:
     rows.append(("数据目录", data_status, data_detail))
     rows.append(("导出目录", "OK", str(settings.export_dir)))
 
+    # 检查 prompt-gen 命令是否全局可用(无需激活 venv 即可调用)
+    cmd_path = shutil.which("prompt-gen")
+    if cmd_path:
+        rows.append(("命令可用性", "OK", "prompt-gen 在 PATH 中,可直接调用"))
+    else:
+        rows.append(
+            (
+                "命令可用性",
+                "缺",
+                "需激活 venv 或将 .venv/Scripts 加入 PATH",
+            )
+        )
+
     table = Table(title="[brand]环境检查[/brand]", show_header=True, header_style="bold")
     table.add_column("项目")
     table.add_column("状态", width=4, justify="center")
@@ -446,6 +517,16 @@ def doctor() -> None:
         "\n[green]环境就绪。[/green] 下一步:"
         " [bold]prompt-gen[/bold] 打开菜单,或 [bold]prompt-gen optimize[/bold] 开始优化"
     )
+
+    # 命令不可用时提示 PATH 配置方法
+    if not cmd_path:
+        console.print(
+            "\n[yellow]提示:[/yellow] 当前 [bold]prompt-gen[/bold] 命令需激活 venv 才能使用。"
+            "若想全局可用,任选其一:\n"
+            "  · 永久方案:将项目 [bold].venv\\Scripts[/bold] 目录加入用户 PATH\n"
+            "  · 临时方案:每次先运行 [bold].\\.venv\\Scripts\\Activate.ps1[/bold]\n"
+            "  · 后备方案:用 [bold]python -m prompt_gen[/bold] 替代"
+        )
 
 
 if __name__ == "__main__":

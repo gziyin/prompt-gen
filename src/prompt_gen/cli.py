@@ -260,7 +260,12 @@ def run_interactive_menu() -> None:
             return
         # export 需要 ID,若未提供则交互询问
         if resolved[0] == "export" and len(resolved) == 1:
-            record_id = typer.prompt("记录 ID(可先 history 查看)").strip()
+            entered = _read_line_or_escape("记录 ID(可先 history 查看): ")
+            if entered is None:
+                console.print("[muted]已取消,返回菜单…[/muted]")
+                console.print()
+                continue
+            record_id = entered.strip()
             if record_id:
                 _typer_invoke(["export", record_id])
                 _pause_for_menu()
@@ -300,6 +305,80 @@ def _pause_for_menu() -> None:
         except (EOFError, KeyboardInterrupt):
             pass
     console.print()
+
+
+def _read_line_or_escape(prompt: str) -> str | None:
+    """读取一行输入,ESC 返回 None 表示取消。
+
+    跨平台:Windows 用 msvcrt.getwch(宽字符),Unix 用 termios+tty raw mode。
+    非交互环境(管道/CI/重定向)退化回 input()。
+
+    支持:回车提交、退格删除、ESC 取消、Ctrl+C 中断。
+    注意:raw mode 下 IME(中文输入法)可能不可用,
+    需输入中文时建议用 --prompt 参数模式。
+    """
+    console.print(prompt, end="")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            chars: list[str] = []
+            while True:
+                ch = msvcrt.getwch()
+                if ch == "\x1b":  # ESC
+                    console.print()
+                    return None
+                if ch in ("\r", "\n"):  # 回车提交
+                    console.print()
+                    return "".join(chars)
+                if ch == "\x08":  # 退格
+                    if chars:
+                        chars.pop()
+                        console.print("\b \b", end="")
+                elif ch == "\x03":  # Ctrl+C
+                    raise KeyboardInterrupt
+                elif ch == "\xe0":  # 功能键前缀(方向键等),丢弃第二字节
+                    msvcrt.getwch()
+                else:
+                    chars.append(ch)
+                    console.print(ch, end="")
+        else:
+            import termios
+            import tty
+
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            chars = []
+            try:
+                tty.setraw(fd)
+                while True:
+                    ch = sys.stdin.read(1)
+                    if ch == "\x1b":  # ESC
+                        print()
+                        return None
+                    if ch in ("\r", "\n"):  # 回车
+                        print()
+                        return "".join(chars)
+                    if ch in ("\x7f", "\x08"):  # 退格
+                        if chars:
+                            chars.pop()
+                            print("\b \b", end="", flush=True)
+                    elif ch == "\x03":  # Ctrl+C
+                        raise KeyboardInterrupt
+                    else:
+                        chars.append(ch)
+                        print(ch, end="", flush=True)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except KeyboardInterrupt:
+        console.print()
+        raise
+    except Exception:
+        # 非交互环境(管道/重定向)退化回 input()
+        try:
+            return input(prompt)
+        except (EOFError, KeyboardInterrupt):
+            return None
 
 
 def _typer_invoke(args: list[str]) -> None:
@@ -343,7 +422,12 @@ def optimize(
             )
         )
         console.print()
-        prompt = typer.prompt("输入提示词").strip()
+        entered = _read_line_or_escape("输入提示词: ")
+        if entered is None:
+            console.print("[muted]已取消,返回菜单…[/muted]")
+            console.print()
+            return
+        prompt = entered.strip()
     else:
         # 参数模式:strip 后由统一校验处理
         prompt = prompt.strip()

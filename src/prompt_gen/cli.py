@@ -241,6 +241,7 @@ def run_interactive_menu() -> None:
     """无子命令时进入引导菜单。
 
     支持数字快捷键、中文、命令名、完整命令(prompt-gen xxx)四种输入形式。
+    子命令执行后暂停,按 ESC 或回车返回菜单。
     """
     _print_welcome()
     console.print()
@@ -262,8 +263,43 @@ def run_interactive_menu() -> None:
             record_id = typer.prompt("记录 ID(可先 history 查看)").strip()
             if record_id:
                 _typer_invoke(["export", record_id])
+                _pause_for_menu()
             continue
         _typer_invoke(resolved)
+        _pause_for_menu()
+
+
+def _pause_for_menu() -> None:
+    """子命令执行后暂停,等待用户按键(ESC/回车/任意键)返回菜单。
+
+    跨平台实现:Windows 用 msvcrt,Unix 用 termios+tty。
+    非交互环境(管道/CI/重定向)用 input() 兜底,不卡住。
+    """
+    console.print()
+    console.print("[muted]按 ESC 或回车返回菜单…[/muted]", end="")
+    try:
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.getch()  # 读取任意单键(ESC/回车/其他均返回)
+        else:
+            import termios
+            import tty
+
+            fd = sys.stdin.fileno()
+            old = termios.tcgetattr(fd)
+            try:
+                tty.setraw(fd)
+                sys.stdin.read(1)
+            finally:
+                termios.tcsetattr(fd, termios.TCSADRAIN, old)
+    except Exception:
+        # 非交互环境(管道/重定向/IDE 集成终端)用 input() 兜底
+        try:
+            input()
+        except (EOFError, KeyboardInterrupt):
+            pass
+    console.print()
 
 
 def _typer_invoke(args: list[str]) -> None:

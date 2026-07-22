@@ -24,6 +24,9 @@ prompts/*.json
 exports/*.md
 exports/*.txt
 
+# Local docs (not tracked)
+docs/
+
 # IDE
 .idea/
 .vscode/

@@ -142,3 +142,29 @@ def test_rich_markup_in_optimized_not_eaten(
     assert result.exit_code == 0, result.output
     assert "[red]标记[/red]" in result.output
     assert "[bold]" in result.output
+
+
+def test_optimized_output_has_no_vertical_box_chars(
+    cli_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """优化结果区域应复制友好:输出不含竖线/圆角等框线字符。
+
+    外层容器用 box.HORIZONTALS,仅顶/底 ─ 横线,故只断言竖向与角字符;
+    内层文本区域(原始/优化后/说明)不得被 Panel 边框包裹。
+    """
+    monkeypatch.setattr(
+        "prompt_gen.cli.build_deepseek_provider",
+        lambda api_key, model: FakeLLM(
+            json.dumps(
+                {
+                    "optimized_prompt": "第一行\n第二行\n第三行",
+                    "rationale": "说明第一行\n说明第二行",
+                },
+                ensure_ascii=False,
+            )
+        ),
+    )
+    result = runner.invoke(app, ["optimize", "--prompt", "test"])
+    assert result.exit_code == 0, result.output
+    for ch in "│╭╮╰╯":
+        assert ch not in result.output

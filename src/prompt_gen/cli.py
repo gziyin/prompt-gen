@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Optional
 
 import typer
+from rich import box
 from rich.console import Console, Group
+from rich.padding import Padding
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -143,43 +145,34 @@ def _print_menu() -> None:
 
 
 def _render_optimized(raw_prompt: str, optimized: str, rationale: str | None) -> Panel:
-    """优化结果面板:原始 / 优化后 / 说明。"""
-    raw_block = Panel(
-        Text(raw_prompt, style="user_text"),
-        border_style="muted",
-        padding=(1, 1),
-        style=PANEL_STYLE,
-    )
-    opt_block = Panel(
-        Text(optimized, style="sys_text"),
-        border_style="muted",
-        padding=(1, 1),
-        style=PANEL_STYLE,
-    )
+    """优化结果面板:原始 / 优化后 / 说明。
 
+    复制友好设计:内部文本区域不用 Panel 框线包裹(鼠标选中复制
+    不带入 │ ╭ ╰ 等字符),改用"标签 + 左缩进内容"的纯文本排版;
+    外层容器用 box.HORIZONTALS(仅顶/底 ─ 横线)保留视觉起止边界。
+    """
     content_parts: list = [
         Text("原始提示词", style="user_label"),
-        raw_block,
+        Padding(Text(raw_prompt, style="user_text"), (0, 0, 0, 2)),
         Text(),
         Text("优化后提示词", style="sys_label"),
-        opt_block,
+        Padding(Text(optimized, style="sys_text"), (0, 0, 0, 2)),
     ]
 
     if rationale:
         content_parts.append(Text())
         content_parts.append(Text("优化说明", style="sys_label"))
-        content_parts.append(
-            Panel(
-                Text(rationale, style="text"),
-                border_style="muted",
-                padding=(1, 1),
-                style=PANEL_STYLE,
-            )
-        )
+        content_parts.append(Padding(Text(rationale, style="text"), (0, 0, 0, 2)))
 
     title = Text()
     title.append("✓ 已优化", style="cyan")
-    return Panel(Group(*content_parts), title=title, border_style="cyan", style=PANEL_STYLE)
+    return Panel(
+        Group(*content_parts),
+        title=title,
+        border_style="cyan",
+        box=box.HORIZONTALS,
+        style=PANEL_STYLE,
+    )
 
 
 def _resolve_choice(choice: str) -> list[str] | None:

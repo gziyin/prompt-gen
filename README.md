@@ -4,12 +4,21 @@
 
 ## 一键启动（推荐）
 
+Windows：
+
 ```powershell
-cd D:\code\Projects\prompt_gen
+cd <项目根目录>
 .\start.ps1
 ```
 
 或资源管理器中双击 `start.bat`。
+
+macOS / Linux（Git Bash / 终端）：
+
+```bash
+cd <项目根目录>
+bash start.sh
+```
 
 脚本会：设置 UTF-8 → 检查/创建 `.venv` → 若无 `.env` 则从示例复制并打开编辑 → 进入**引导菜单**。
 
@@ -60,33 +69,46 @@ prompt-gen
 
 ## 安装
 
+Windows：
+
 ```powershell
-cd D:\code\Projects\prompt_gen
-E:\04Programming\CodingEnvironment\Python\python.exe -m venv .venv
+cd <项目根目录>
+python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
 pip install -e ".[dev]"
 ```
 
-也可直接 `.\start.ps1`（首次会自动建 venv 并安装）。
+macOS / Linux：
 
-### 让 prompt-gen 全局可用(可选)
-
-默认情况下,`prompt-gen` 命令需在激活 venv 后使用。若想在任意终端直接调用,任选其一:
-
-```powershell
-# 方案 1:永久 — 将 venv 的 Scripts 目录加入用户 PATH
-$venvScripts = (Resolve-Path .\.venv\Scripts).Path
-$current = [Environment]::GetEnvironmentVariable("PATH", "User")
-[Environment]::SetEnvironmentVariable("PATH", "$current;$venvScripts", "User")
-# 重启终端后生效
-
-# 方案 2:临时 — 每次先激活 venv
-.\.venv\Scripts\Activate.ps1
-
-# 方案 3:后备 — 用 python -m 替代
-python -m prompt_gen
+```bash
+cd <项目根目录>
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -U pip
+pip install -e ".[dev]"
 ```
+
+也可直接运行 `.\start.ps1` / `bash start.sh`（首次会自动建 venv 并安装）。
+
+## 全局命令（任意目录直接 `prompt-gen`）
+
+本项目内置「首次启动自动安装全局命令」能力，克隆/部署到任意机器后**无需手动配置 PATH**：
+
+- 首次运行 `.\start.ps1` / `bash start.sh` 或 `python -m prompt_gen` 时，会自动把 `prompt-gen`
+  全局命令安装到用户 PATH（Windows → `~/bin`，macOS/Linux → `~/.local/bin`）。
+- 安装完成后**重开终端**，即可在任意目录直接输入 `prompt-gen` 启动（像 `claude` 一样）。
+- 安装是幂等的，重复运行不会重复写入；全局命令通过"垫片"转发到仓库内启动器，逻辑只有一份。
+
+手动安装 / 重装（例如仓库搬家后）：
+
+```bash
+python install.py          # Windows 下用 python 或 py
+# 或
+make install               # 等价于上面一行
+```
+
+可用环境变量 `PROMPT_GEN_HOME` 覆盖项目根目录（默认自动推导）。
 
 运行 `prompt-gen doctor` 可检查命令是否已在 PATH 中。
 

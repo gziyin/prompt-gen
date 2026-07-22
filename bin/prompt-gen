@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# 真启动器（POSIX / macOS / Linux / Git Bash on Windows）
+# 通过自身位置推导项目根，首次缺失 venv 时自动初始化，并静默安装全局命令。
+set -euo pipefail
+
+PG_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+[ -n "${PROMPT_GEN_HOME:-}" ] && PG_HOME="$PROMPT_GEN_HOME"
+PG_VENV="$PG_HOME/.venv"
+PY="$(command -v python3 || command -v python)"
+
+# 兼容 Windows(.\Scripts) 与 POSIX(./bin) 两种 venv 布局
+resolve_venv_py() {
+  if [ -x "$PG_VENV/bin/python" ]; then
+    echo "$PG_VENV/bin/python"
+  elif [ -x "$PG_VENV/Scripts/python.exe" ]; then
+    echo "$PG_VENV/Scripts/python.exe"
+  else
+    echo ""
+  fi
+}
+
+VENV_PY="$(resolve_venv_py)"
+
+# 需要初始化：venv 不存在，或已存在但 prompt_gen 未安装（例如 venv 损坏）
+if [ -z "$VENV_PY" ] || ! "$VENV_PY" -c "import prompt_gen" >/dev/null 2>&1; then
+  echo "[prompt-gen] 首次启动，正在初始化虚拟环境..."
+  "$PY" -m venv "$PG_VENV"
+  VENV_PY="$(resolve_venv_py)"
+  "$VENV_PY" -m pip install -U pip
+  "$VENV_PY" -m pip install -e "$PG_HOME[dev]"
+  [ -f "$PG_HOME/.env" ] || cp "$PG_HOME/.env.example" "$PG_HOME/.env" 2>/dev/null || true
+fi
+
+# 首次启动自动安装全局命令（幂等、静默、失败不致命）
+"$VENV_PY" "$PG_HOME/install.py" >/dev/null 2>&1 || true
+
+cd "$PG_HOME"
+exec "$VENV_PY" -m prompt_gen "$@"

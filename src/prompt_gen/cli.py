@@ -87,7 +87,7 @@ def _print_setup_hint() -> None:
                     "  2. 编辑 .env,填入真实 DEEPSEEK_API_KEY",
                     "  3. 运行: prompt-gen doctor   # 检查环境",
                     "  4. 运行: prompt-gen          # 打开引导菜单",
-                    "  或双击: start.bat / 执行 .\\start.ps1",
+                    "  或双击: scripts\\start.bat / 执行 .\\scripts\\start.ps1",
                 ]
             ),
             title="上手提示",
@@ -256,7 +256,7 @@ def run_interactive_menu() -> None:
             console.print()
             continue
         if resolved == ["__exit__"]:
-            console.print("已退出。下次可运行 [bold]prompt-gen[/bold] 或 [bold].\\start.ps1[/bold]。")
+            console.print("已退出。下次可运行 [bold]prompt-gen[/bold] 或 [bold].\\scripts\\start.ps1[/bold]。")
             return
         # export 需要 ID,若未提供则交互询问
         if resolved[0] == "export" and len(resolved) == 1:
@@ -456,7 +456,7 @@ def history_cmd() -> None:
                 "开始优化:\n"
                 "  · [bold]prompt-gen optimize[/bold]  交互输入\n"
                 "  · [bold]prompt-gen[/bold]            打开引导菜单\n"
-                "  · [bold].\\start.ps1[/bold]          一键启动",
+                "  · [bold].\\scripts\\start.ps1[/bold]          一键启动",
                 title="空列表",
                 border_style="yellow",
                 style=PANEL_STYLE,

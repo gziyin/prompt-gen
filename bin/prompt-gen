@@ -32,7 +32,7 @@ if [ -z "$VENV_PY" ] || ! "$VENV_PY" -c "import prompt_gen" >/dev/null 2>&1; the
 fi
 
 # 首次启动自动安装全局命令（幂等、静默、失败不致命）
-"$VENV_PY" "$PG_HOME/install.py" >/dev/null 2>&1 || true
+"$VENV_PY" "$PG_HOME/scripts/install.py" >/dev/null 2>&1 || true
 
 cd "$PG_HOME"
 exec "$VENV_PY" -m prompt_gen "$@"

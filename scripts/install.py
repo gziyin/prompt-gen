@@ -6,14 +6,14 @@ directory that forwards to this repo's real launcher (``bin/prompt-gen``), and
 ensures that directory is on PATH. Idempotent and safe to re-run.
 
 Usage:
-    python install.py            # install / ensure installed (silent unless changed)
-    python install.py --verbose  # show what it does
+    python scripts/install.py            # install / ensure installed (silent unless changed)
+    python scripts/install.py --verbose  # show what it does
 """
 import os
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent
+REPO = Path(__file__).resolve().parent.parent
 VERBOSE = "--verbose" in sys.argv
 
 

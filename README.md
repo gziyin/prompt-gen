@@ -8,16 +8,16 @@ Windows：
 
 ```powershell
 cd <项目根目录>
-.\start.ps1
+.\scripts\start.ps1
 ```
 
-或资源管理器中双击 `start.bat`。
+或资源管理器中双击 `scripts\start.bat`。
 
 macOS / Linux（Git Bash / 终端）：
 
 ```bash
 cd <项目根目录>
-bash start.sh
+bash scripts/start.sh
 ```
 
 脚本会：设置 UTF-8 → 检查/创建 `.venv` → 若无 `.env` 则从示例复制并打开编辑 → 进入**引导菜单**。
@@ -89,13 +89,13 @@ python -m pip install -U pip
 pip install -e ".[dev]"
 ```
 
-也可直接运行 `.\start.ps1` / `bash start.sh`（首次会自动建 venv 并安装）。
+也可直接运行 `.\scripts\start.ps1` / `bash scripts/start.sh`（首次会自动建 venv 并安装）。
 
 ## 全局命令（任意目录直接 `prompt-gen`）
 
 本项目内置「首次启动自动安装全局命令」能力，克隆/部署到任意机器后**无需手动配置 PATH**：
 
-- 首次运行 `.\start.ps1` / `bash start.sh` 或 `python -m prompt_gen` 时，会自动把 `prompt-gen`
+- 首次运行 `.\scripts\start.ps1` / `bash scripts/start.sh` 或 `python -m prompt_gen` 时，会自动把 `prompt-gen`
   全局命令安装到用户 PATH（Windows → `~/bin`，macOS/Linux → `~/.local/bin`）。
 - 安装完成后**重开终端**，即可在任意目录直接输入 `prompt-gen` 启动（像 `claude` 一样）。
 - 安装是幂等的，重复运行不会重复写入；全局命令通过"垫片"转发到仓库内启动器，逻辑只有一份。
@@ -103,7 +103,7 @@ pip install -e ".[dev]"
 手动安装 / 重装（例如仓库搬家后）：
 
 ```bash
-python install.py          # Windows 下用 python 或 py
+python scripts/install.py          # Windows 下用 python 或 py
 # 或
 make install               # 等价于上面一行
 ```
@@ -170,7 +170,7 @@ python -m prompt_gen
 pytest
 ```
 
-中文乱码时可：`$env:PYTHONIOENCODING='utf-8'; chcp 65001`，或直接用 `.\start.ps1`。
+中文乱码时可：`$env:PYTHONIOENCODING='utf-8'; chcp 65001`，或直接用 `.\scripts\start.ps1`。
 
 ## 退出码
 

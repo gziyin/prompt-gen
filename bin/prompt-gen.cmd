@@ -21,7 +21,7 @@ if not exist "%PG_HOME%\.env" (if exist "%PG_HOME%\.env.example" copy "%PG_HOME%
 
 :run
 rem Install the global command on first run (idempotent, silent).
-"%PG_VENV%\Scripts\python.exe" "%PG_HOME%\install.py" >nul 2>&1
+"%PG_VENV%\Scripts\python.exe" "%PG_HOME%\scripts\install.py" >nul 2>&1
 
 cd /d "%PG_HOME%"
 "%PG_VENV%\Scripts\python.exe" -m prompt_gen %*

@@ -24,13 +24,18 @@ def _truncate(text: str, max_len: int) -> str:
 
 def format_history_rows(
     items: list[OptimizationRecord],
+    preview_width: int = 50,
 ) -> list[tuple[str, str, str, str]]:
-    """返回 (id, raw_preview, optimized_preview, created_at) 行,供 Rich Table 使用。"""
+    """返回 (id, raw_preview, optimized_preview, created_at) 行。
+
+    preview_width 控制单条预览的截断宽度,调用方可按终端实际宽度
+    动态传入,避免在窄终端下溢出、在宽终端下浪费空间。
+    """
     rows: list[tuple[str, str, str, str]] = []
     for record in items:
         ts = _as_utc(record.created_at).strftime("%Y-%m-%d %H:%M")
-        raw_preview = _truncate(record.raw_prompt, 40)
-        opt_preview = _truncate(record.optimized_prompt, 40)
+        raw_preview = _truncate(record.raw_prompt, preview_width)
+        opt_preview = _truncate(record.optimized_prompt, preview_width)
         rows.append((record.id, raw_preview, opt_preview, ts))
     return rows
 

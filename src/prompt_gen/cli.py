@@ -308,73 +308,34 @@ def _pause_for_menu() -> None:
 
 
 def _read_line_or_escape(prompt: str) -> str | None:
-    """读取一行输入,ESC 返回 None 表示取消。
+    """读取一行输入,ESC / Ctrl+C / Ctrl+D 返回 None 表示取消。
 
-    跨平台:Windows 用 msvcrt.getwch(宽字符),Unix 用 termios+tty raw mode。
-    非交互环境(管道/CI/重定向)退化回 input()。
+    优先使用 prompt_toolkit:获得完整行编辑(退格、左右方向键、
+    Delete、Home/End、历史)与中文输入法支持,ESC 一键取消。
+    prompt_toolkit 不可用或处于非交互环境(管道/CI/重定向)时,
+    自动退化回标准 input()(此时仅支持系统自带行编辑,ESC 不可用,
+    改用 Ctrl+C 取消)。
 
-    支持:回车提交、退格删除、ESC 取消、Ctrl+C 中断。
-    注意:raw mode 下 IME(中文输入法)可能不可用,
-    需输入中文时建议用 --prompt 参数模式。
+    注意:ESC 通过 event.app.exit(result=None) 让 prompt() 直接
+    返回 None,不在 handler 里抛异常(否则会冒泡到 prompt_toolkit
+    事件循环报 "Unhandled exception")。
     """
-    console.print(prompt, end="")
     try:
-        if sys.platform == "win32":
-            import msvcrt
+        from prompt_toolkit import prompt as pt_prompt
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.keys import Keys
 
-            chars: list[str] = []
-            while True:
-                ch = msvcrt.getwch()
-                if ch == "\x1b":  # ESC
-                    console.print()
-                    return None
-                if ch in ("\r", "\n"):  # 回车提交
-                    console.print()
-                    return "".join(chars)
-                if ch == "\x08":  # 退格
-                    if chars:
-                        chars.pop()
-                        console.print("\b \b", end="")
-                elif ch == "\x03":  # Ctrl+C
-                    raise KeyboardInterrupt
-                elif ch == "\xe0":  # 功能键前缀(方向键等),丢弃第二字节
-                    msvcrt.getwch()
-                else:
-                    chars.append(ch)
-                    console.print(ch, end="")
-        else:
-            import termios
-            import tty
+        kb = KeyBindings()
 
-            fd = sys.stdin.fileno()
-            old = termios.tcgetattr(fd)
-            chars = []
-            try:
-                tty.setraw(fd)
-                while True:
-                    ch = sys.stdin.read(1)
-                    if ch == "\x1b":  # ESC
-                        print()
-                        return None
-                    if ch in ("\r", "\n"):  # 回车
-                        print()
-                        return "".join(chars)
-                    if ch in ("\x7f", "\x08"):  # 退格
-                        if chars:
-                            chars.pop()
-                            print("\b \b", end="", flush=True)
-                    elif ch == "\x03":  # Ctrl+C
-                        raise KeyboardInterrupt
-                    else:
-                        chars.append(ch)
-                        print(ch, end="", flush=True)
-            finally:
-                termios.tcsetattr(fd, termios.TCSADRAIN, old)
-    except KeyboardInterrupt:
-        console.print()
-        raise
-    except Exception:
-        # 非交互环境(管道/重定向)退化回 input()
+        @kb.add(Keys.Escape)
+        def _on_esc(event):  # noqa: ANN001, ANN202
+            event.app.exit(result=None)
+
+        return pt_prompt(prompt, key_bindings=kb)
+    except (KeyboardInterrupt, EOFError):
+        return None
+    except Exception:  # noqa: BLE001
+        # prompt_toolkit 不可用或非 tty:退化回 input()
         try:
             return input(prompt)
         except (EOFError, KeyboardInterrupt):
@@ -503,22 +464,40 @@ def history_cmd() -> None:
         )
         return
 
-    rows = format_history_rows(items)
-    table = Table(
-        title=f"[brand]优化历史[/brand]  [muted]({len(items)})[/muted]",
-        show_header=True,
-        header_style="bold",
-        title_justify="left",
-    )
-    table.add_column("ID", style="key", no_wrap=True)
-    table.add_column("原始提示词", style="user_text", no_wrap=True)
-    table.add_column("优化后提示词", style="sys_text", no_wrap=True)
-    table.add_column("创建时间", style="muted", no_wrap=True)
-    for record_id, raw_preview, opt_preview, ts in rows:
-        table.add_row(record_id, raw_preview, opt_preview, ts)
-    console.print(table)
+    # 纵向卡片布局:每条记录独占一块,元信息横排标题栏,
+    # 原始/优化预览各占整行宽度。预览宽度按终端实际宽度动态计算,
+    # 留出 Panel 边框(2) + 内边距(2) + 标签缩进(8) ≈ 12 字符余量,
+    # 并设上限避免超宽终端下预览过长难以扫读。
+    term_width = console.width or 80
+    preview_width = max(20, min(term_width - 14, 72))
+    rows = format_history_rows(items, preview_width=preview_width)
+
     console.print()
-    console.print("[muted]导出: prompt-gen export <id>[/muted]")
+    console.print(
+        f"[bold brand]优化历史[/bold brand]  [muted]({len(items)} 条,最新在前)[/muted]"
+    )
+    console.print()
+
+    for idx, (record_id, raw_preview, opt_preview, ts) in enumerate(rows, 1):
+        line_raw = Text.assemble(("原始   ", "user_label"), (raw_preview, "user_text"))
+        line_opt = Text.assemble(("优化后 ", "sys_label"), (opt_preview, "sys_text"))
+        card = Panel(
+            Group(line_raw, Text(""), line_opt),
+            title=(
+                f"[key]#{idx}[/key]  "
+                f"[muted]{ts}[/muted]  "
+                f"[dim]{record_id}[/dim]"
+            ),
+            title_align="left",
+            border_style="cyan",
+            style=PANEL_STYLE,
+            padding=(0, 1),
+        )
+        console.print(card)
+
+    console.print()
+    console.print("[muted]导出完整记录: prompt-gen export <id>[/muted]")
+    console.print("[muted]查看单条详情可用 ID 末尾几位即可(前缀匹配)[/muted]")
     console.print()
 
 

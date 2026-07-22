@@ -257,3 +257,82 @@ def test_doctor_reports_command_missing_with_hint(
     assert "命令可用性" in result.output
     assert "PATH" in result.output
     assert "永久方案" in result.output or "Activate" in result.output
+
+
+# -- _read_line_or_escape:交互输入行编辑(ESC/Ctrl+C 取消) --
+
+
+def test_read_line_returns_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """prompt_toolkit 正常返回字符串。"""
+    import prompt_toolkit
+
+    monkeypatch.setattr(prompt_toolkit, "prompt", lambda *a, **kw: "hello world")
+    from prompt_gen.cli import _read_line_or_escape
+
+    assert _read_line_or_escape("x: ") == "hello world"
+
+
+def test_read_line_esc_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """ESC 时 prompt() 返回 None(表示取消)。
+
+    真实行为:ESC 触发 event.app.exit(result=None),prompt() 干净
+    返回 None(不在 handler 里抛异常)。这里直接模拟该返回值。
+    """
+    import prompt_toolkit
+
+    monkeypatch.setattr(prompt_toolkit, "prompt", lambda *a, **kw: None)
+    from prompt_gen.cli import _read_line_or_escape
+
+    assert _read_line_or_escape("x: ") is None
+
+
+def test_read_line_ctrl_c_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ctrl+C(KeyboardInterrupt)返回 None。"""
+    import prompt_toolkit
+
+    def _raise_ki(*a, **kw):  # noqa: ANN002, ANN003
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(prompt_toolkit, "prompt", _raise_ki)
+    from prompt_gen.cli import _read_line_or_escape
+
+    assert _read_line_or_escape("x: ") is None
+
+
+def test_read_line_eof_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ctrl+D(EOFError)返回 None。"""
+    import prompt_toolkit
+
+    def _raise_eof(*a, **kw):  # noqa: ANN002, ANN003
+        raise EOFError
+
+    monkeypatch.setattr(prompt_toolkit, "prompt", _raise_eof)
+    from prompt_gen.cli import _read_line_or_escape
+
+    assert _read_line_or_escape("x: ") is None
+
+
+def test_read_line_fallback_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """prompt_toolkit 不可用时退化回 input()。"""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "prompt_toolkit", None)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "fallback-value")
+    from prompt_gen.cli import _read_line_or_escape
+
+    assert _read_line_or_escape("x: ") == "fallback-value"
+
+
+def test_read_line_fallback_ctrl_c_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """回退分支中 Ctrl+C 同样返回 None。"""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "prompt_toolkit", None)
+
+    def _raise_ki(prompt=""):  # noqa: ANN001
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("builtins.input", _raise_ki)
+    from prompt_gen.cli import _read_line_or_escape
+
+    assert _read_line_or_escape("x: ") is None

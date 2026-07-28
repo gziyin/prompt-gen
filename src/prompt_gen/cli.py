@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -20,6 +21,7 @@ from prompt_gen import __version__
 from prompt_gen.adapters.llm.deepseek import build_deepseek_provider
 from prompt_gen.adapters.storage.history_store import HistoryStore
 from prompt_gen.config import _find_project_root, load_settings
+from prompt_gen.domain.models import OptimizationRecord
 from prompt_gen.domain.optimizer import PromptOptimizer
 from prompt_gen.exceptions import (
     ConfigurationError,
@@ -27,10 +29,12 @@ from prompt_gen.exceptions import (
     PromptGenerationError,
     PromptNotFoundError,
 )
-from prompt_gen.formatter import format_export_markdown, format_history_rows
+from prompt_gen.formatter import format_export_markdown
 from prompt_gen.ui_theme import PANEL_STYLE, THEME
 
 PLACEHOLDER_KEYS = frozenset({"sk-your-key-here", "your-key-here", ""})
+
+_HISTORY_PAGE_SIZE = 15  # 历史记录每页条数
 
 
 def _configure_stdio() -> None:
@@ -267,14 +271,23 @@ def run_interactive_menu() -> None:
         _pause_for_menu()
 
 
-def _pause_for_menu() -> None:
-    """子命令执行后暂停,等待用户按键(ESC/回车/任意键)返回菜单。
+def _pause_for_menu(hint: str = "按 ESC 或回车返回菜单…") -> None:
+    """按键暂停返回,默认提示返回菜单;history 详情后用"返回列表"。
 
     跨平台实现:Windows 用 msvcrt,Unix 用 termios+tty。
     非交互环境(管道/CI/重定向)用 input() 兜底,不卡住。
     """
     console.print()
-    console.print("[muted]按 ESC 或回车返回菜单…[/muted]", end="")
+    console.print(f"[muted]{hint}[/muted]", end="")
+    if not sys.stdin.isatty():
+        # 非交互环境(管道/CI/CliRunner):直接 input() 兜底,EOF 即返回,
+        # 避免 msvcrt.getch() 在无控制台时阻塞。
+        try:
+            input()
+        except (EOFError, KeyboardInterrupt):
+            pass
+        console.print()
+        return
     try:
         if sys.platform == "win32":
             import msvcrt
@@ -292,7 +305,7 @@ def _pause_for_menu() -> None:
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old)
     except Exception:
-        # 非交互环境(管道/重定向/IDE 集成终端)用 input() 兜底
+        # 真终端下按键读取异常时,退化 input()
         try:
             input()
         except (EOFError, KeyboardInterrupt):
@@ -432,9 +445,64 @@ def optimize(
     console.print()
 
 
+def _fmt_ts(dt: datetime) -> str:
+    """统一为 UTC 后格式化为 YYYY-MM-DD HH:MM。"""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M")
+
+
+def _truncate_preview(text: str, max_len: int) -> str:
+    """单行预览,超长用省略号截断。"""
+    text = text.replace("\n", " ").strip()
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1] + "…"
+
+
+def _render_record_detail(record: OptimizationRecord) -> Panel:
+    """单条记录详情面板:元信息 + 原始 + 优化后 + 说明。
+
+    复用"✓ 已优化"排版风格(HORIZONTALS + 标签 + 左缩进),复制友好。
+    """
+    ts = _fmt_ts(record.created_at) + " UTC"
+    meta_parts: list = [
+        ("id: ", "muted"),
+        (record.id, "dim"),
+        ("   created_at: ", "muted"),
+        (ts, "dim"),
+    ]
+    if record.model:
+        meta_parts.extend([("   model: ", "muted"), (record.model, "dim")])
+    meta = Text.assemble(*meta_parts)
+
+    content_parts: list = [
+        meta,
+        Text(),
+        Text("原始提示词", style="user_label"),
+        Padding(Text(record.raw_prompt, style="user_text"), (0, 0, 0, 2)),
+        Text(),
+        Text("优化后提示词", style="sys_label"),
+        Padding(Text(record.optimized_prompt, style="sys_text"), (0, 0, 0, 2)),
+    ]
+    if record.rationale:
+        content_parts.append(Text())
+        content_parts.append(Text("优化说明", style="sys_label"))
+        content_parts.append(Padding(Text(record.rationale, style="text"), (0, 0, 0, 2)))
+
+    title = Text("记录详情", style="cyan")
+    return Panel(
+        Group(*content_parts),
+        title=title,
+        border_style="cyan",
+        box=box.HORIZONTALS,
+        style=PANEL_STYLE,
+    )
+
+
 @app.command("history")
 def history_cmd() -> None:
-    """按创建时间倒序列出优化历史。"""
+    """按创建时间倒序分页浏览优化历史,输入序号查看详情。"""
     store, _ = _store_from_settings(require_api_key=False)
     try:
         items = store.list_all()
@@ -457,41 +525,78 @@ def history_cmd() -> None:
         )
         return
 
-    # 纵向卡片布局:每条记录独占一块,元信息横排标题栏,
-    # 原始/优化预览各占整行宽度。预览宽度按终端实际宽度动态计算,
-    # 留出 Panel 边框(2) + 内边距(2) + 标签缩进(8) ≈ 12 字符余量,
-    # 并设上限避免超宽终端下预览过长难以扫读。
+    total = len(items)
     term_width = console.width or 80
-    preview_width = max(20, min(term_width - 14, 72))
-    rows = format_history_rows(items, preview_width=preview_width)
+    # 序号(#123+空格) + 时间(16) + ID(12) + 间隔 ≈ 37,预览取剩余,保底 20、上限 60
+    preview_width = max(20, min(term_width - 37, 60))
 
     console.print()
     console.print(
-        f"[bold brand]优化历史[/bold brand]  [muted]({len(items)} 条,最新在前)[/muted]"
+        f"[bold brand]优化历史[/bold brand]  "
+        f"[muted]({total} 条,最新在前,每页 {_HISTORY_PAGE_SIZE} 条)[/muted]"
     )
     console.print()
 
-    for idx, (record_id, raw_preview, opt_preview, ts) in enumerate(rows, 1):
-        line_raw = Text.assemble(("原始   ", "user_label"), (raw_preview, "user_text"))
-        line_opt = Text.assemble(("优化后 ", "sys_label"), (opt_preview, "sys_text"))
-        card = Panel(
-            Group(line_raw, Text(""), line_opt),
-            title=(
-                f"[key]#{idx}[/key]  "
-                f"[muted]{ts}[/muted]  "
-                f"[dim]{record_id}[/dim]"
-            ),
-            title_align="left",
-            border_style="cyan",
-            style=PANEL_STYLE,
-            padding=(0, 1),
-        )
-        console.print(card)
+    page = 0
+    while True:
+        start = page * _HISTORY_PAGE_SIZE
+        page_items = items[start : start + _HISTORY_PAGE_SIZE]
+        for offset, record in enumerate(page_items):
+            idx = start + offset + 1
+            line = Text.assemble(
+                (f"#{idx:<4}", "key"),
+                (_fmt_ts(record.created_at), "muted"),
+                "  ",
+                (record.id, "dim"),
+                "  ",
+                (_truncate_preview(record.raw_prompt, preview_width), "user_text"),
+            )
+            console.print(line)
 
-    console.print()
-    console.print("[muted]导出完整记录: prompt-gen export <id>[/muted]")
-    console.print("[muted]查看单条详情可用 ID 末尾几位即可(前缀匹配)[/muted]")
-    console.print()
+        has_next = start + _HISTORY_PAGE_SIZE < total
+        has_prev = page > 0
+        console.print()
+        hints: list[str] = []
+        if has_next:
+            hints.append("回车=下一页")
+        if has_prev:
+            hints.append("b=上一页")
+        hints.append("输入序号=查看详情")
+        hints.append("q=退出")
+        console.print(f"[muted]{'  ·  '.join(hints)}[/muted]")
+
+        choice = _read_line_or_escape("> ")
+        if choice is None:
+            break
+        choice = choice.strip()
+        if choice == "":
+            if has_next:
+                page += 1
+                console.print()
+                continue
+            break
+        lower = choice.lower()
+        if lower in {"q", "quit", "退出"}:
+            break
+        if lower in {"b", "prev", "上一页"}:
+            if has_prev:
+                page -= 1
+                console.print()
+            continue
+        if choice.isdigit():
+            n = int(choice)
+            if 1 <= n <= total:
+                console.print()
+                console.print(_render_record_detail(items[n - 1]))
+                console.print()
+                _pause_for_menu("按 ESC 或回车返回列表…")
+                console.print()
+                continue
+            err_console.print(f"[yellow]序号超出范围 (1-{total})[/yellow]")
+            continue
+        err_console.print(
+            "[yellow]无效输入:回车翻页 / b 上一页 / 序号查看 / q 退出[/yellow]"
+        )
 
 
 @app.command()

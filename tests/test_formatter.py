@@ -34,7 +34,7 @@ def test_format_history_rows_returns_tuples() -> None:
 def test_format_history_rows_truncates_long_prompts() -> None:
     long_text = "x" * 100
     items = [_record(raw_prompt=long_text, optimized_prompt=long_text)]
-    rows = format_history_rows(items)
+    rows = format_history_rows(items, preview_width=40)
     assert len(rows[0][1]) <= 40
     assert "…" in rows[0][1]
 

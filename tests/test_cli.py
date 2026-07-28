@@ -103,7 +103,53 @@ def test_history_lists_saved_records(
     result = runner.invoke(app, ["history"])
     assert result.exit_code == 0, result.output
     assert "原始内容" in result.output
-    assert "优化内容" in result.output
+    assert "#1" in result.output
+    assert "输入序号=查看详情" in result.output
+
+
+def test_history_pagination(
+    cli_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """超过一页时，回车翻到下一页，q 退出。"""
+    monkeypatch.setattr(
+        "prompt_gen.cli.build_deepseek_provider",
+        lambda api_key, model: FakeLLM(_ok_json(optimized="优化内容")),
+    )
+    for i in range(20):
+        runner.invoke(app, ["optimize", "--prompt", f"原始内容{i:02d}"])
+    result = runner.invoke(app, ["history"], input="\nq\n")
+    assert result.exit_code == 0, result.output
+    assert "原始内容19" in result.output  # 第一页（最新）
+    assert "原始内容00" in result.output  # 第二页（最旧）
+
+
+def test_history_detail_view(
+    cli_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """输入序号查看详情，显示完整优化后内容。"""
+    monkeypatch.setattr(
+        "prompt_gen.cli.build_deepseek_provider",
+        lambda api_key, model: FakeLLM(_ok_json(optimized="优化后的完整内容")),
+    )
+    runner.invoke(app, ["optimize", "--prompt", "原始内容"])
+    result = runner.invoke(app, ["history"], input="1\n")
+    assert result.exit_code == 0, result.output
+    assert "原始内容" in result.output
+    assert "优化后的完整内容" in result.output
+    assert "记录详情" in result.output
+
+
+def test_history_quit_exits_cleanly(
+    cli_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """q 正常退出 history 分页。"""
+    monkeypatch.setattr(
+        "prompt_gen.cli.build_deepseek_provider",
+        lambda api_key, model: FakeLLM(_ok_json()),
+    )
+    runner.invoke(app, ["optimize", "--prompt", "原始内容"])
+    result = runner.invoke(app, ["history"], input="q\n")
+    assert result.exit_code == 0, result.output
 
 
 def test_export_writes_markdown(

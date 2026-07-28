@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from prompt_gen.domain.optimizer import PromptOptimizer, _safe_api_error
+from prompt_gen.domain.optimizer import OPTIMIZE_INSTRUCTIONS, PromptOptimizer, _safe_api_error
 from prompt_gen.exceptions import PromptGenerationError
 from prompt_gen.ports.llm_provider import LLMRequest, LLMResponse
 
@@ -124,3 +124,26 @@ def test_safe_api_error_maps_timeout() -> None:
 def test_safe_api_error_hides_api_key() -> None:
     msg = _safe_api_error(RuntimeError("error with sk-abc123 in it"))
     assert "隐藏" in msg
+
+
+# --- 回归测试：六段式框架与 max_tokens ---
+
+
+def test_optimize_sets_large_max_tokens() -> None:
+    """深度结构化输出需要更大 max_tokens，避免截断。"""
+    fake = FakeLLM(_ok_json())
+    optimizer = PromptOptimizer(fake)
+    optimizer.optimize("test")
+    assert fake.calls[0].max_tokens == 8192
+
+
+def test_instructions_contains_six_part_skeleton() -> None:
+    """OPTIMIZE_INSTRUCTIONS 必须包含六段式骨架关键词，防止退回扁平结构。"""
+    for section in ("角色", "任务/目标", "能力", "工作流程", "约束", "输出格式"):
+        assert section in OPTIMIZE_INSTRUCTIONS, f"指令缺失六段式段落: {section}"
+
+
+def test_instructions_allows_extension_sections() -> None:
+    """指令应允许在六段式之后按需追加语义化扩展段，但不得替代骨架。"""
+    assert "按需扩展" in OPTIMIZE_INSTRUCTIONS
+    assert "不得替代六段骨架" in OPTIMIZE_INSTRUCTIONS

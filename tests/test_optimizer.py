@@ -6,7 +6,13 @@ import json
 
 import pytest
 
-from prompt_gen.domain.optimizer import OPTIMIZE_INSTRUCTIONS, PromptOptimizer, _safe_api_error
+from prompt_gen.domain.optimizer import (
+    OPTIMIZE_INSTRUCTIONS,
+    OPTIMIZE_INSTRUCTIONS_EN,
+    PromptOptimizer,
+    _detect_language,
+    _safe_api_error,
+)
 from prompt_gen.exceptions import PromptGenerationError
 from prompt_gen.ports.llm_provider import LLMRequest, LLMResponse
 
@@ -147,3 +153,37 @@ def test_instructions_allows_extension_sections() -> None:
     """指令应允许在六段式之后按需追加语义化扩展段，但不得替代骨架。"""
     assert "按需扩展" in OPTIMIZE_INSTRUCTIONS
     assert "不得替代六段骨架" in OPTIMIZE_INSTRUCTIONS
+
+
+# --- 语言检测与提示词选择 ---
+
+
+def test_detect_language_english() -> None:
+    assert _detect_language("Help me write a poem about summer") == "en"
+
+
+def test_detect_language_chinese() -> None:
+    assert _detect_language("帮我写一首关于夏天的诗") == "zh"
+
+
+def test_detect_language_mixed_defaults_to_chinese_with_cjk_majority() -> None:
+    assert _detect_language("帮我写 poem") == "zh"
+
+
+def test_detect_language_empty_defaults_to_english() -> None:
+    assert _detect_language("") == "en"
+    assert _detect_language("   \n\t  ") == "en"
+
+
+def test_optimize_uses_chinese_prompt_for_chinese_input() -> None:
+    fake = FakeLLM(_ok_json())
+    optimizer = PromptOptimizer(fake)
+    optimizer.optimize("帮我写代码")
+    assert fake.calls[0].messages[0].content == OPTIMIZE_INSTRUCTIONS
+
+
+def test_optimize_uses_english_prompt_for_english_input() -> None:
+    fake = FakeLLM(_ok_json())
+    optimizer = PromptOptimizer(fake)
+    optimizer.optimize("Help me write a poem about summer")
+    assert fake.calls[0].messages[0].content == OPTIMIZE_INSTRUCTIONS_EN

@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 from prompt_gen import config as config_mod
 from prompt_gen.adapters.storage.history_store import HistoryStore
 from prompt_gen.cli import app
+from prompt_gen.domain.optimizer import OPTIMIZE_INSTRUCTIONS_EN, PromptOptimizer
 from prompt_gen.ports.llm_provider import LLMRequest, LLMResponse
 
 runner = CliRunner()
@@ -168,3 +169,32 @@ def test_optimized_output_has_no_vertical_box_chars(
     assert result.exit_code == 0, result.output
     for ch in "│╭╮╰╯":
         assert ch not in result.output
+
+
+class _RecordingFakeLLM:
+    def __init__(self, content: str) -> None:
+        self._content = content
+        self.calls: list[LLMRequest] = []
+
+    def complete(self, request: LLMRequest) -> LLMResponse:
+        self.calls.append(request)
+        return LLMResponse(content=self._content)
+
+
+def test_regression_f4cc9b76ca00_english_input_gets_english_system_prompt() -> None:
+    """Regression for f4cc9b76ca00: English input must receive English system prompt."""
+    fake = _RecordingFakeLLM(
+        json.dumps(
+            {
+                "optimized_prompt": "You are a senior poet...",
+                "rationale": "Using the six-section skeleton...",
+            },
+            ensure_ascii=False,
+        )
+    )
+    optimizer = PromptOptimizer(fake)
+    optimizer.optimize("Help me write a poem about summer")
+    assert len(fake.calls) == 1
+    system_content = fake.calls[0].messages[0].content
+    assert system_content == OPTIMIZE_INSTRUCTIONS_EN
+    assert "你是资深项目分析师" not in system_content

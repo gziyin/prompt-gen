@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import json
+import re
+from typing import Literal
 
 from pydantic import BaseModel, ValidationError
 
 from prompt_gen.exceptions import PromptGenerationError
 from prompt_gen.ports.llm_provider import LLMProvider, LLMRequest, Message
 
+# NOTE: 若修改优化指令，请同步镜像到 OPTIMIZE_INSTRUCTIONS（中文）与 OPTIMIZE_INSTRUCTIONS_EN（英文）。
 OPTIMIZE_INSTRUCTIONS = """你是资深提示词工程师，擅长把粗糙的 prompt 重构为专业、结构化、可复现的高质量提示词。
 
 ## 产出标准
@@ -47,6 +50,56 @@ OPTIMIZE_INSTRUCTIONS = """你是资深提示词工程师，擅长把粗糙的 p
 }
 """
 
+OPTIMIZE_INSTRUCTIONS_EN = """You are a senior prompt engineer, skilled at refactoring rough prompts into professional, structured, and reproducible high-quality prompts.
+
+## Output Standards
+The optimized prompt must be based on the "six-section skeleton", with optional extension sections added as needed.
+
+### Six-Section Skeleton (required, do not omit any section)
+1. Role: senior, domain-specific, with clear responsibility boundaries; avoid vague "expert" titles
+2. Task / Objective: actionable goals starting with verbs, listed in separate items, focusing on "what to do"
+3. Skills: 3-5 abilities directly matching the task, reflecting professional judgment dimensions
+4. Workflow: numbered steps, each with a clear action and deliverable; indicate sequential/parallel relationships between steps
+5. Constraints / Rules: boundaries (only based on what, do not assume what), traceability (conclusions point to sources), no overreach (do not introduce unverified concepts), mark ambiguous areas as "clarification needed" with the original snippet attached
+6. Output Format: a concrete Markdown template skeleton matching the task, including heading levels, tables, lists, emoji markers, etc., ready for the user to copy and use
+
+### Optional Extension Sections (only append when needed, must not replace the six-section skeleton)
+When the task involves special background, response suggestions, risk contingency plans, acceptance criteria, example dialogues, glossaries, etc., append them after the six-section skeleton with semantic `##` headings, e.g.: `## Background`, `## Response Suggestions`, `## Acceptance Criteria`, `## Summary`. Do not force extra sections when unnecessary.
+
+## Optimization Principles
+- Preserve original intent; do not change the user's core request
+- Customize each section according to task type (code review / project analysis / troubleshooting / writing, etc.); do not mechanically apply templates
+- Language must follow the user's input language
+- Placeholders (e.g. {code}, {input}) remain unchanged
+
+## Output Requirements
+- Output valid JSON, without an outer Markdown code block wrapper
+- JSON fields: optimized_prompt, rationale
+- optimized_prompt is the complete optimized prompt (including the six-section skeleton + optional extension sections), ready for the user to copy and use
+- rationale is the optimization explanation: first state the framework selection reason, then list the main structural changes (bullet points, no more than 6)
+
+## EXAMPLE JSON OUTPUT
+{
+  "optimized_prompt": "You are a senior project analyst taking over a new project for the first time, responsible for systematically scanning and deeply analyzing the project, focusing on records and specification documents (specs) under the `.qoder` and `.workbuddy` directories, to provide actionable decision support for subsequent development planning.\\n\\n## Task / Objective\\n1. Scan the project structure and identify key components and dependencies\\n2. Review all specs and historical records in `.qoder` and `.workbuddy`\\n3. Extract core business logic, module responsibilities, and potential risks\\n4. Output a structured analysis report to support subsequent development planning\\n\\n## Skills\\n- System-level architecture interpretation: quickly understand module interaction mechanisms\\n- Document semantic mining: accurately extract constraints, interfaces, and state machines from specs\\n- Risk identification: discover inconsistencies, redundancies, outdated items, or undefined design items\\n- Information structuring: transform scattered records into traceable conclusions\\n\\n## Workflow\\n1. List all subdirectories and files under `.qoder` and `.workbuddy`, marking types and version identifiers\\n2. Read specs item by item, extracting module functions, inputs/outputs, state transitions, permissions, and dependencies\\n3. Compare conflicts/duplications between specs, and verify whether documents align with implementation\\n4. Integrate into a report containing \\"Module Overview / Specification Summary / Issue List / Priorities\\"\\n\\n## Constraints\\n- Only based on existing materials within `.qoder` and `.workbuddy`; do not assume external system behavior\\n- Do not introduce unverified new concepts or extended features\\n- Mark ambiguous/missing/contradictory documentation as \\"clarification needed\\" with the original text snippet attached\\n- All conclusions must be traceable to specific file paths and line numbers\\n\\n## Output Format\\n## 1. Directory Overview\\n- `.qoder/`\\n  - `config/` -> [description]\\n  - `specs/` -> [description]\\n- `.workbuddy/`\\n  - `flows/` -> [description]\\n\\n## 2. Core Specification Summary\\n### Module: [name]\\n- Functional positioning: [brief description]\\n- Input specification: [field + type + required]\\n- Output specification: [field + type + example]\\n- Dependencies: [external service / interface / data source]\\n\\n## 3. Key Findings\\n- ✅ Good consistency: [example]\\n- ⚠️ Clarification needed: [example, with file:line]\\n- ❌ Potential risk: [example]\\n\\n## 4. Suggestions and Priorities\\n| Item | Suggestion | Priority |\\n|------|------------|----------|\\n| [item] | [suggestion] | High/Medium/Low |",
+  "rationale": "Using the six-section skeleton ensures a stable and reusable structure.\\n1. Added senior role and responsibility boundaries\\n2. Task broken down into 4 actionable objectives\\n3. Skills section matched with architecture interpretation / semantic mining / risk identification\\n4. Workflow refined into 4 steps, each with a clear deliverable\\n5. Constraints emphasize traceability and no overreach\\n6. Output format provides a ready-to-use Markdown template (including tables and emoji markers)"
+}
+"""
+
+_CJK_RE = re.compile(r"[一-鿿]")
+
+
+def _detect_language(text: str) -> Literal["zh", "en"]:
+    """Detect whether the input is primarily Chinese or English/other.
+
+    Uses a simple CJK-character ratio heuristic. No external dependencies.
+    """
+    stripped = re.sub(r"\s+", "", text)
+    if not stripped:
+        return "en"
+    cjk_count = len(_CJK_RE.findall(stripped))
+    return "zh" if cjk_count / len(stripped) > 0.30 else "en"
+
+
 _MAX_ATTEMPTS = 2
 _MAX_TOKENS = 8192  # 深度结构化输出需要更大空间，避免截断
 
@@ -70,9 +123,14 @@ class PromptOptimizer:
 
     def optimize(self, raw_prompt: str) -> tuple[str, str | None]:
         """优化提示词,返回 (optimized_prompt, rationale)。"""
+        instructions = (
+            OPTIMIZE_INSTRUCTIONS
+            if _detect_language(raw_prompt) == "zh"
+            else OPTIMIZE_INSTRUCTIONS_EN
+        )
         request = LLMRequest(
             messages=[
-                Message(role="system", content=OPTIMIZE_INSTRUCTIONS),
+                Message(role="system", content=instructions),
                 Message(role="user", content=raw_prompt),
             ],
             response_format="json_object",

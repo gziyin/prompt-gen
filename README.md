@@ -37,6 +37,7 @@ prompt-gen
 | 2 | 历史记录(分页浏览,序号查看详情) |
 | 3 | 导出为 Markdown(按 ID 导出某次对话) |
 | 4 | 检查环境配置 (doctor) |
+| 5 | 提示词仓库(记录常用提示词并查询) |
 | 0 | 退出 |
 
 ## 功能
@@ -49,6 +50,14 @@ prompt-gen
 | `prompt-gen optimize -p ...` | 脚本参数优化 |
 | `prompt-gen history` | 分页浏览历史,输入序号查看详情 |
 | `prompt-gen export <id>` | 导出某次对话为 Markdown |
+| `prompt-gen repo` | 交互式浏览提示词仓库(分组选择/分页/详情) |
+| `prompt-gen repo add --name 名称 --content 正文 [--group 分组]` | 新增常用提示词 |
+| `prompt-gen repo list [--group 分组] [--ungrouped]` | 列出提示词,可按分组过滤 |
+| `prompt-gen repo search <关键词> [--group 分组]` | 按关键词查询(匹配名称/正文/备注/分组) |
+| `prompt-gen repo show <id>` | 查看某条提示词详情 |
+| `prompt-gen repo delete <id>` | 删除某条提示词 |
+| `prompt-gen repo groups` | 列出全部分组及条数 |
+| `prompt-gen repo group add/rename/delete <分组名>` | 管理分组 |
 
 不做：Agent、RAG、Web UI、多用户、云端同步。
 
@@ -61,6 +70,7 @@ prompt-gen
 - **结果面板**：左侧青色竖线面板,含 `原始提示词` 与 `优化后提示词` 深色代码块,以及可选的 `优化说明`。
 - **环境检查 (`doctor`)**：`✓` / `✗` 配合绿 / 红着色。
 - **历史 (`history`)**：精简单行列表（序号/时间/ID/原始预览），分页浏览（回车翻页 / b 上一页 / q 退出），输入序号查看完整详情。
+- **仓库 (`repo`)**：分组选择屏（全部/未分组/各分组）→ 分页列表（序号看详情、n 新增、g 新建分组、q 返回）→ 详情面板；子命令 `repo add/list/search/show/delete/groups` 便于脚本调用。
 
 ## 环境要求
 

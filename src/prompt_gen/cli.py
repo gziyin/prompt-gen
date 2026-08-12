@@ -5,9 +5,10 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 import typer
 from rich import box
@@ -20,8 +21,9 @@ from rich.text import Text
 from prompt_gen import __version__
 from prompt_gen.adapters.llm.deepseek import build_deepseek_provider
 from prompt_gen.adapters.storage.history_store import HistoryStore
+from prompt_gen.adapters.storage.repo_store import RepoStore
 from prompt_gen.config import _find_project_root, load_settings
-from prompt_gen.domain.models import OptimizationRecord
+from prompt_gen.domain.models import OptimizationRecord, RepoPrompt
 from prompt_gen.domain.optimizer import PromptOptimizer
 from prompt_gen.exceptions import (
     ConfigurationError,
@@ -112,6 +114,17 @@ def _store_from_settings(require_api_key: bool = False) -> tuple[HistoryStore, P
     return HistoryStore(settings.data_dir), settings.export_dir
 
 
+def _repo_store_from_settings(
+    require_api_key: bool = False,
+) -> tuple[RepoStore, Path]:
+    try:
+        settings = load_settings(require_api_key=require_api_key)
+    except ConfigurationError as exc:
+        _exit_config(str(exc))
+        raise  # pragma: no cover
+    return RepoStore(settings.data_dir), settings.export_dir
+
+
 def _print_welcome() -> None:
     body = Text()
     body.append("本地提示词优化器 · 终端工作台\n", style="subtitle")
@@ -134,6 +147,7 @@ def _print_menu() -> None:
         ("2", "历史记录"),
         ("3", "导出为 Markdown"),
         ("4", "检查环境配置 (doctor)"),
+        ("5", "提示词仓库"),
         ("0", "退出"),
     ]
     lines: list[Text] = []
@@ -144,7 +158,7 @@ def _print_menu() -> None:
         lines.append(line)
     console.print(Group(*lines))
     console.print(
-        "[muted]也可直接: prompt-gen optimize | history | export <id> | doctor[/muted]"
+        "[muted]也可直接: prompt-gen optimize | history | export <id> | doctor | repo[/muted]"
     )
 
 
@@ -202,10 +216,12 @@ def _resolve_choice(choice: str) -> list[str] | None:
         "2": ["history"],
         "3": ["export"],
         "4": ["doctor"],
+        "5": ["repo"],
         "优化": ["optimize"],
         "历史": ["history"],
         "导出": ["export"],
         "检查": ["doctor"],
+        "仓库": ["repo"],
     }
     if choice in quick_map:
         return quick_map[choice]
@@ -226,6 +242,7 @@ def _resolve_choice(choice: str) -> list[str] | None:
         "history": "history",
         "export": "export",
         "doctor": "doctor",
+        "repo": "repo",
     }
     cmd = parts[0]
     if cmd in cmd_map:
@@ -248,7 +265,7 @@ def run_interactive_menu() -> None:
         resolved = _resolve_choice(choice)
         if resolved is None:
             err_console.print(
-                "[yellow]无效选项,请输入 0-4 或命令名(optimize/history/export/doctor)。[/yellow]"
+                "[yellow]无效选项,请输入 0-5 或命令名(optimize/history/export/doctor/repo)。[/yellow]"
             )
             console.print()
             continue
@@ -724,6 +741,567 @@ def doctor() -> None:
             "  · 临时方案:每次先运行 [bold].\\.venv\\Scripts\\Activate.ps1[/bold]\n"
             "  · 后备方案:用 [bold]python -m prompt_gen[/bold] 替代"
         )
+
+
+# ── prompt 仓库 ──────────────────────────────────────────
+
+_REPO_PAGE_SIZE = 15  # 仓库列表每页条数
+
+
+def _display_width(text: str) -> int:
+    """按终端显示宽度计数(中文字符按 2 列),用于列对齐。"""
+    return sum(
+        2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+        for ch in text
+    )
+
+
+def _repo_separator() -> None:
+    """整行分隔线,区分区块,避免文字扎堆。"""
+    console.rule(style="dim")
+
+
+def _repo_header(title: str, meta: str) -> None:
+    """居中区块标题:品牌标题 + 分隔点 + 元信息。"""
+    console.print()
+    console.print(
+        Text.assemble(
+            ("◇ ", "dim"),
+            (title, "brand"),
+            ("  ·  ", "muted"),
+            (meta, "muted"),
+        ),
+        justify="center",
+    )
+    _repo_separator()
+
+
+def _scope_loader(store: RepoStore, label: str) -> Callable[[], list[RepoPrompt]]:
+    """返回按范围(label)实时拉取提示词列表的函数。
+
+    用于列表循环每次渲染前刷新,删除后不再回显已删项。
+    """
+    if label == "全部":
+        return store.list_all
+    if label == "未分组":
+        return store.list_ungrouped
+    return lambda: store.list_by_group(label)
+
+
+def _render_repo_detail(prompt: RepoPrompt) -> Panel:
+    """单条提示词详情面板,复用记录详情排版(HORIZONTALS + 标签 + 缩进)。"""
+    meta_parts: list = [
+        ("id: ", "muted"),
+        (prompt.id, "dim"),
+        ("   name: ", "muted"),
+        (prompt.name, "dim"),
+    ]
+    if prompt.group:
+        meta_parts.extend([("   group: ", "muted"), (prompt.group, "dim")])
+    meta_parts.extend(
+        [
+            ("   created: ", "muted"),
+            (_fmt_ts(prompt.created_at), "dim"),
+            ("   updated: ", "muted"),
+            (_fmt_ts(prompt.updated_at), "dim"),
+        ]
+    )
+    meta = Text.assemble(*meta_parts)
+
+    content_parts: list = [
+        meta,
+        Text(),
+        Text(prompt.name, style="user_label"),
+        Padding(Text(prompt.content, style="user_text"), (0, 0, 0, 2)),
+    ]
+    if prompt.description:
+        content_parts.append(Text())
+        content_parts.append(Text("备注", style="sys_label"))
+        content_parts.append(
+            Padding(Text(prompt.description, style="text"), (0, 0, 0, 2))
+        )
+    title = Text(f"提示词 {prompt.id}", style="cyan")
+    return Panel(
+        Group(*content_parts),
+        title=title,
+        border_style="cyan",
+        box=box.HORIZONTALS,
+        style=PANEL_STYLE,
+    )
+
+
+def _repo_line(prompt: RepoPrompt, idx: int, preview_width: int) -> Text:
+    """单行列表:序号 · 名称 · 分组 · 正文预览,列间用分隔符。"""
+    group_tag = f"[{prompt.group}]" if prompt.group else "[未分组]"
+    return Text.assemble(
+        (f"  {idx:<2} ", "key"),
+        ("▸ ", "dim"),
+        (prompt.name, "user_text"),
+        ("  ", "dim"),
+        ("─", "dim"),
+        ("  ", "dim"),
+        (group_tag, "muted"),
+        ("  ", "dim"),
+        ("│", "dim"),
+        ("  ", "dim"),
+        (_truncate_preview(prompt.content, preview_width), "dim"),
+    )
+
+
+def _repo_do_add(
+    store: RepoStore,
+    *,
+    name: str,
+    content: str,
+    group: str | None,
+    description: str | None,
+) -> None:
+    prompt = store.save(
+        name=name,
+        content=content,
+        group=group or None,
+        description=description or None,
+    )
+    console.print(f"[green]已保存:[/green] {store.repo_dir / f'{prompt.id}.json'}")
+    console.print()
+
+
+def _repo_add_interactive(store: RepoStore, default_group: str | None = None) -> None:
+    console.print(
+        Panel(
+            "名称、正文为必填,分组/备注可留空。",
+            title="新增提示词",
+            border_style="green",
+            style=PANEL_STYLE,
+        )
+    )
+    console.print()
+    name = _read_line_or_escape("名称: ")
+    if name is None:
+        console.print("[muted]已取消。[/muted]")
+        return
+    name = name.strip()
+    if not name:
+        err_console.print("[yellow]名称不能为空[/yellow]")
+        return
+    content = _read_line_or_escape("正文(单行): ")
+    if content is None:
+        console.print("[muted]已取消。[/muted]")
+        return
+    content = content.strip()
+    if not content:
+        err_console.print("[yellow]正文不能为空[/yellow]")
+        return
+    hint = (
+        f"分组(留空默认 {default_group}): "
+        if default_group
+        else "分组(留空跳过): "
+    )
+    group = _read_line_or_escape(hint)
+    if group is None:
+        console.print("[muted]已取消。[/muted]")
+        return
+    group = group.strip() or default_group or None
+    description = _read_line_or_escape("备注(留空跳过): ")
+    if description is None:
+        console.print("[muted]已取消。[/muted]")
+        return
+    description = description.strip() or None
+    _repo_do_add(
+        store,
+        name=name,
+        content=content,
+        group=group,
+        description=description,
+    )
+
+
+def _repo_new_group_interactive(store: RepoStore) -> None:
+    name = _read_line_or_escape("新分组名(ESC 取消): ")
+    if name is None:
+        console.print("[muted]已取消。[/muted]")
+        return
+    name = name.strip()
+    if not name:
+        err_console.print("[yellow]分组名不能为空[/yellow]")
+        return
+    store.add_group(name)
+    console.print(f"[green]已创建分组:[/green] {name}")
+    console.print()
+
+
+def _repo_list_loop(
+    store: RepoStore, load_items: Callable[[], list[RepoPrompt]], title: str
+) -> None:
+    """进入某范围后的分页列表循环,每次渲染前重新拉取数据。
+
+    详情里删除后列表会刷新(不再回显已删项);q 返回分组选择。
+    """
+    term_width = console.width or 80
+    preview_width = max(20, min(term_width - 45, 60))
+    default_group = title if title not in ("全部", "未分组") else None
+    page = 0
+    while True:
+        items = load_items()
+        total = len(items)
+        if total == 0:
+            console.print(
+                Panel(
+                    f"「{title}」下暂无提示词。",
+                    title="空列表",
+                    border_style="yellow",
+                    style=PANEL_STYLE,
+                )
+            )
+            return
+        # 删除后条目变少,页码可能越界,夹回最后一页
+        last_page = (total - 1) // _REPO_PAGE_SIZE
+        if page > last_page:
+            page = last_page
+        start = page * _REPO_PAGE_SIZE
+        page_items = items[start : start + _REPO_PAGE_SIZE]
+        _repo_header(title, f"{total} 条 · 每页 {_REPO_PAGE_SIZE} 条")
+        for offset, prompt in enumerate(page_items):
+            console.print(
+                _repo_line(prompt, start + offset + 1, preview_width)
+            )
+        has_next = start + _REPO_PAGE_SIZE < total
+        has_prev = page > 0
+        console.print()
+        hints: list[str] = []
+        if has_next:
+            hints.append("回车=下一页")
+        if has_prev:
+            hints.append("b=上一页")
+        hints.append("序号=详情")
+        hints.append("n=新增")
+        hints.append("q=返回分组")
+        console.print("[muted]" + "  ·  ".join(hints) + "[/muted]", justify="center")
+        console.print()
+
+        choice = _read_line_or_escape("> ")
+        if choice is None:
+            return
+        choice = choice.strip()
+        if choice == "":
+            if has_next:
+                page += 1
+                console.print()
+                continue
+            return
+        lower = choice.lower()
+        if lower in {"q", "quit", "退出"}:
+            return
+        if lower in {"b", "prev", "上一页"}:
+            if has_prev:
+                page -= 1
+                console.print()
+            continue
+        if lower in {"n", "add", "新增"}:
+            console.print()
+            _repo_add_interactive(store, default_group=default_group)
+            return  # 返回分组选择屏以刷新列表
+        if choice.isdigit():
+            n = int(choice)
+            if 1 <= n <= total:
+                console.print()
+                console.print(_render_repo_detail(items[n - 1]))
+                console.print()
+                _repo_show_detail_actions(store, items[n - 1])
+                console.print()
+                continue
+            err_console.print(f"[yellow]序号超出范围 (1-{total})[/yellow]")
+            continue
+        err_console.print("[yellow]无效输入[/yellow]")
+
+
+def _repo_show_detail_actions(store: RepoStore, prompt: RepoPrompt) -> None:
+    """详情后的动作:回车返回,d 删除。"""
+    answer = _read_line_or_escape("回车=返回 · d=删除: ")
+    if answer is None:
+        return
+    if answer.strip().lower() in {"d", "delete", "删除"}:
+        store.delete(prompt.id)
+        console.print(f"[green]已删除:[/green] {prompt.id}")
+        console.print()
+
+
+def repo_browse() -> None:
+    """交互式浏览 prompt 仓库:分组选择 → 分页列表 → 详情。"""
+    store, _ = _repo_store_from_settings(require_api_key=False)
+    while True:
+        all_items = store.list_all()
+        choices: list[tuple[str, list[RepoPrompt]]] = [
+            ("全部", all_items),
+            ("未分组", store.list_ungrouped()),
+        ]
+        for group_name in store.list_groups():
+            choices.append((group_name, store.list_by_group(group_name)))
+
+        _repo_header("prompt 仓库", f"共 {len(all_items)} 条")
+        name_w = max(_display_width(label) for label, _ in choices)
+        for i, (label, items) in enumerate(choices, 1):
+            pad = " " * (name_w - _display_width(label))
+            console.print(
+                Text.assemble(
+                    (f"  {i:<2} ", "key"),
+                    ("▸ ", "dim"),
+                    (label, "user_text"),
+                    (pad + "  ", "dim"),
+                    ("─", "dim"),
+                    ("  ", "dim"),
+                    (f"({len(items)})", "muted"),
+                )
+            )
+        console.print()
+        console.print(
+            "[muted]序号=进入 · n=新增 · g=新建分组 · q=返回[/muted]",
+            justify="center",
+        )
+        console.print()
+        choice = _read_line_or_escape("> ")
+        if choice is None:
+            return
+        choice = choice.strip()
+        lower = choice.lower()
+        if lower in {"q", "quit", "退出", "0"}:
+            return
+        if lower in {"n", "add", "新增"}:
+            console.print()
+            _repo_add_interactive(store)
+            continue
+        if lower in {"g", "group", "新建分组", "创建分组"}:
+            console.print()
+            _repo_new_group_interactive(store)
+            continue
+        if choice.isdigit():
+            n = int(choice)
+            if 1 <= n <= len(choices):
+                label, _ = choices[n - 1]
+                console.print()
+                _repo_list_loop(store, _scope_loader(store, label), label)
+                console.print()
+                continue
+            err_console.print(f"[yellow]序号超出范围 (1-{len(choices)})[/yellow]")
+            continue
+        err_console.print(
+            "[yellow]无效输入:序号进入 / n 新增 / g 新建分组 / q 返回[/yellow]"
+        )
+
+
+def _print_repo_list(store: RepoStore, items: list[RepoPrompt], title: str) -> None:
+    """非分页打印列表(repo list 命令用)。"""
+    if not items:
+        console.print(
+            Panel(
+                "暂无提示词。用 [bold]prompt-gen repo add[/bold] 新增。",
+                title="空仓库",
+                border_style="yellow",
+                style=PANEL_STYLE,
+            )
+        )
+        return
+    term_width = console.width or 80
+    preview_width = max(20, min(term_width - 45, 60))
+    _repo_header(title, f"{len(items)} 条")
+    for i, prompt in enumerate(items, 1):
+        console.print(_repo_line(prompt, i, preview_width))
+    console.print()
+
+
+repo_app = typer.Typer(
+    name="repo",
+    help="提示词仓库:记录常用提示词并查询。",
+    no_args_is_help=False,
+    add_completion=False,
+)
+
+
+@repo_app.callback(invoke_without_command=True)
+def _repo_main(ctx: typer.Context) -> None:
+    """prompt 仓库。无子命令时进入交互浏览。"""
+    if ctx.invoked_subcommand is None:
+        repo_browse()
+
+
+@repo_app.command("add")
+def repo_add(
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="提示词名称"),
+    content: Optional[str] = typer.Option(None, "--content", "-c", help="提示词正文"),
+    group: Optional[str] = typer.Option(None, "--group", "-g", help="分组名(可省略)"),
+    description: Optional[str] = typer.Option(
+        None, "--description", "-d", help="备注(可省略)"
+    ),
+) -> None:
+    """新增一条常用提示词到仓库。
+
+    未提供名称与正文时进入完整交互引导;只提供其一则报错;
+    名称与正文齐备时直接保存(可选字段默认省略)。
+    """
+    store, _ = _repo_store_from_settings(require_api_key=False)
+    if name is None and content is None:
+        _repo_add_interactive(store, default_group=group)
+        return
+    if not name or not name.strip():
+        _exit_input("缺少 --name 名称")
+        return
+    if not content or not content.strip():
+        _exit_input("缺少 --content 正文")
+        return
+    _repo_do_add(
+        store,
+        name=name.strip(),
+        content=content.strip(),
+        group=(group.strip() or None) if group else None,
+        description=(description.strip() or None) if description else None,
+    )
+
+
+@repo_app.command("list")
+def repo_list(
+    group: Optional[str] = typer.Option(None, "--group", "-g", help="按分组过滤"),
+    ungrouped: bool = typer.Option(False, "--ungrouped", help="只看未分组"),
+) -> None:
+    """列出仓库中的提示词,可按分组过滤。"""
+    store, _ = _repo_store_from_settings(require_api_key=False)
+    if ungrouped:
+        items = store.list_ungrouped()
+        title = "未分组"
+    elif group is not None:
+        group = group.strip() or None
+        items = store.list_by_group(group)
+        title = group or "未分组"
+    else:
+        items = store.list_all()
+        title = "全部提示词"
+    _print_repo_list(store, items, title)
+
+
+@repo_app.command("search")
+def repo_search(
+    query: str = typer.Argument(..., help="搜索关键词"),
+    group: Optional[str] = typer.Option(None, "--group", "-g", help="按分组过滤"),
+) -> None:
+    """按关键词搜索提示词(匹配名称/正文/备注/分组)。"""
+    store, _ = _repo_store_from_settings(require_api_key=False)
+    group_val = (group.strip() or None) if group else None
+    items = store.search(query, group=group_val)
+    if not items:
+        console.print(f"[yellow]未找到匹配「{query}」的提示词。[/yellow]")
+        return
+    _print_repo_list(store, items, f"搜索结果: {query}")
+
+
+@repo_app.command("show")
+def repo_show(
+    repo_id: str = typer.Argument(..., help="提示词 ID"),
+) -> None:
+    """查看仓库中某条提示词的完整详情。"""
+    store, _ = _repo_store_from_settings(require_api_key=False)
+    try:
+        prompt = store.load(repo_id)
+    except PromptNotFoundError as exc:
+        _exit_data(str(exc))
+        return
+    except PromptDataError as exc:
+        _exit_data(str(exc))
+        return
+    console.print()
+    console.print(_render_repo_detail(prompt))
+    console.print()
+
+
+@repo_app.command("delete")
+def repo_delete(
+    repo_id: str = typer.Argument(..., help="提示词 ID"),
+) -> None:
+    """删除仓库中某条提示词。"""
+    store, _ = _repo_store_from_settings(require_api_key=False)
+    try:
+        store.load(repo_id)
+    except PromptNotFoundError as exc:
+        _exit_data(str(exc))
+        return
+    except PromptDataError as exc:
+        _exit_data(str(exc))
+        return
+    store.delete(repo_id)
+    console.print(f"[green]已删除:[/green] {repo_id}")
+    console.print()
+
+
+@repo_app.command("groups")
+def repo_groups() -> None:
+    """列出仓库全部分组及各自条数(含空分组)。"""
+    store, _ = _repo_store_from_settings(require_api_key=False)
+    groups = store.list_groups()
+    ungrouped = len(store.list_ungrouped())
+    total = len(store.list_all())
+    if not groups and ungrouped == 0:
+        console.print("暂无分组与提示词。")
+        return
+    _repo_header("仓库分组", f"{total} 条 · 未分组 {ungrouped}")
+    rows = [("未分组", ungrouped)] + [
+        (g, len(store.list_by_group(g))) for g in groups
+    ]
+    name_w = max(_display_width(label) for label, _ in rows)
+    for i, (label, count) in enumerate(rows, 1):
+        pad = " " * (name_w - _display_width(label))
+        console.print(
+            Text.assemble(
+                (f"  {i:<2} ", "key"),
+                ("▸ ", "dim"),
+                (label, "user_text"),
+                (pad + "  ", "dim"),
+                ("─", "dim"),
+                ("  ", "dim"),
+                (f"({count})", "muted"),
+            )
+        )
+    console.print()
+
+
+repo_group_app = typer.Typer(
+    name="group", help="管理仓库分组。", no_args_is_help=False, add_completion=False
+)
+repo_app.add_typer(repo_group_app, name="group")
+
+
+@repo_group_app.command("add")
+def repo_group_add(name: str = typer.Argument(..., help="新分组名")) -> None:
+    """新建一个分组(可先建空分组)。"""
+    store, _ = _repo_store_from_settings(require_api_key=False)
+    store.add_group(name.strip())
+    console.print(f"[green]已创建分组:[/green] {name.strip()}")
+    console.print()
+
+
+@repo_group_app.command("rename")
+def repo_group_rename(
+    old: str = typer.Argument(..., help="旧分组名"),
+    new: str = typer.Argument(..., help="新分组名"),
+) -> None:
+    """重命名分组(同步修改其下所有提示词)。"""
+    store, _ = _repo_store_from_settings(require_api_key=False)
+    try:
+        store.rename_group(old, new)
+    except PromptDataError as exc:
+        _exit_data(str(exc))
+        return
+    console.print(f"[green]已重命名:[/green] {old} → {new}")
+    console.print()
+
+
+@repo_group_app.command("delete")
+def repo_group_delete(name: str = typer.Argument(..., help="要删除的分组名")) -> None:
+    """从清单移除分组(不删除其下提示词)。"""
+    store, _ = _repo_store_from_settings(require_api_key=False)
+    store.delete_group(name)
+    console.print(f"[green]已移除分组:[/green] {name}")
+    console.print()
+
+
+app.add_typer(repo_app, name="repo")
 
 
 if __name__ == "__main__":

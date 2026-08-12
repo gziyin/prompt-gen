@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from prompt_gen.adapters.storage.history_store import HistoryStore
+from prompt_gen.adapters.storage.repo_store import RepoStore
 from prompt_gen.cli import _resolve_choice, app
 from prompt_gen.ports.llm_provider import LLMRequest, LLMResponse
 
@@ -226,6 +227,7 @@ def test_resolve_choice_digit_shortcut() -> None:
     assert _resolve_choice("2") == ["history"]
     assert _resolve_choice("3") == ["export"]
     assert _resolve_choice("4") == ["doctor"]
+    assert _resolve_choice("5") == ["repo"]
 
 
 def test_resolve_choice_exit() -> None:
@@ -240,6 +242,7 @@ def test_resolve_choice_chinese_keyword() -> None:
     assert _resolve_choice("历史") == ["history"]
     assert _resolve_choice("导出") == ["export"]
     assert _resolve_choice("检查") == ["doctor"]
+    assert _resolve_choice("仓库") == ["repo"]
 
 
 def test_resolve_choice_command_name() -> None:
@@ -247,6 +250,8 @@ def test_resolve_choice_command_name() -> None:
     assert _resolve_choice("history") == ["history"]
     assert _resolve_choice("export") == ["export"]
     assert _resolve_choice("doctor") == ["doctor"]
+    assert _resolve_choice("repo") == ["repo"]
+    assert _resolve_choice("repo list") == ["repo", "list"]
 
 
 def test_resolve_choice_full_command_with_prompt_gen_prefix() -> None:
@@ -382,3 +387,125 @@ def test_read_line_fallback_ctrl_c_returns_none(monkeypatch: pytest.MonkeyPatch)
     from prompt_gen.cli import _read_line_or_escape
 
     assert _read_line_or_escape("x: ") is None
+
+
+# -- prompt 仓库 --
+
+REPO_DIR_HINT = "history"  # cli_env 中 PROMPT_GEN_DATA_DIR 的子目录名
+
+
+def _repo_store(cli_env: Path) -> RepoStore:
+    return RepoStore(cli_env / "history")
+
+
+def test_repo_add_with_all_params_saves(cli_env: Path) -> None:
+    result = runner.invoke(
+        app,
+        ["repo", "add", "--name", "代码审查", "--content", "请审查",
+         "--group", "项目A"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "已保存" in result.output
+    store = _repo_store(cli_env)
+    items = store.list_all()
+    assert len(items) == 1
+    assert items[0].name == "代码审查"
+    assert items[0].group == "项目A"
+
+
+def test_repo_add_missing_name_exits_2(cli_env: Path) -> None:
+    result = runner.invoke(
+        app, ["repo", "add", "--content", "正文"]
+    )
+    assert result.exit_code == 2
+
+
+def test_repo_list_empty(cli_env: Path) -> None:
+    result = runner.invoke(app, ["repo", "list"])
+    assert result.exit_code == 0, result.output
+    assert "暂无" in result.output
+
+
+def test_repo_list_lists_records(cli_env: Path) -> None:
+    runner.invoke(
+        app, ["repo", "add", "--name", "代码审查", "--content", "审查正文",
+              "--group", "项目A"]
+    )
+    result = runner.invoke(app, ["repo", "list"])
+    assert result.exit_code == 0, result.output
+    assert "代码审查" in result.output
+    assert "项目A" in result.output
+
+
+def test_repo_list_group_filter(cli_env: Path) -> None:
+    runner.invoke(
+        app, ["repo", "add", "--name", "A", "--content", "x", "--group", "组1"]
+    )
+    runner.invoke(
+        app, ["repo", "add", "--name", "B", "--content", "y", "--group", "组2"]
+    )
+    result = runner.invoke(app, ["repo", "list", "--group", "组1"])
+    assert result.exit_code == 0, result.output
+    assert "A" in result.output
+    assert "B" not in result.output
+
+
+def test_repo_search_finds_match(cli_env: Path) -> None:
+    runner.invoke(
+        app, ["repo", "add", "--name", "代码审查", "--content", "检查质量"]
+    )
+    result = runner.invoke(app, ["repo", "search", "审查"])
+    assert result.exit_code == 0, result.output
+    assert "代码审查" in result.output
+
+
+def test_repo_search_no_match(cli_env: Path) -> None:
+    result = runner.invoke(app, ["repo", "search", "不存在词"])
+    assert result.exit_code == 0, result.output
+    assert "未找到" in result.output
+
+
+def test_repo_groups_lists_empty_group(cli_env: Path) -> None:
+    result = runner.invoke(app, ["repo", "group", "add", "项目A"])
+    assert result.exit_code == 0, result.output
+    assert "已创建分组" in result.output
+    out = runner.invoke(app, ["repo", "groups"])
+    assert out.exit_code == 0, out.output
+    assert "项目A" in out.output
+
+
+def test_repo_show_and_delete(cli_env: Path) -> None:
+    runner.invoke(
+        app, ["repo", "add", "--name", "代码审查", "--content", "正文"]
+    )
+    store = _repo_store(cli_env)
+    repo_id = store.list_all()[0].id
+    show = runner.invoke(app, ["repo", "show", repo_id])
+    assert show.exit_code == 0, show.output
+    assert "代码审查" in show.output
+    dele = runner.invoke(app, ["repo", "delete", repo_id])
+    assert dele.exit_code == 0, dele.output
+    assert store.list_all() == []
+
+
+def test_repo_show_nonexistent_exits_3(cli_env: Path) -> None:
+    result = runner.invoke(app, ["repo", "show", "abcdef123456"])
+    assert result.exit_code == 3
+
+
+def test_repo_group_rename_updates(cli_env: Path) -> None:
+    runner.invoke(
+        app, ["repo", "add", "--name", "A", "--content", "x", "--group", "旧组"]
+    )
+    result = runner.invoke(app, ["repo", "group", "rename", "旧组", "新组"])
+    assert result.exit_code == 0, result.output
+    store = _repo_store(cli_env)
+    assert store.list_all()[0].group == "新组"
+    assert "新组" in store.list_groups()
+
+
+def test_repo_interactive_browse_add(cli_env: Path) -> None:
+    """交互浏览:分组屏选 1(全部,空)→ 提示无 → n 新增 → q 退出。"""
+    result = runner.invoke(app, ["repo"], input="1\nq\n")
+    assert result.exit_code == 0, result.output
+    assert "prompt 仓库" in result.output

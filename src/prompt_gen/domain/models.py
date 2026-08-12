@@ -54,3 +54,50 @@ class OptimizationRecord(BaseModel):
             value = value.strip()
             return value or None
         return value
+
+
+class RepoPrompt(BaseModel):
+    """prompt 仓库中的一条常用提示词。
+
+    手动记录的可复用提示词，可归入可选的分组（group），也可直接
+    存在默认路径下（group 为 None）。持久化到 repo/<id>.json。
+    """
+
+    schema_version: Literal[1] = 1
+    id: str  # 12 位小写 hex
+    name: str  # 显示名，非空，参与搜索
+    content: str  # 提示词正文，非空
+    group: str | None = None  # 可选分组；空白→None，不强制层级
+    description: str | None = None  # 可选备注，参与搜索
+    created_at: datetime
+    updated_at: datetime  # 创建时等于 created_at，update 时刷新
+
+    @field_validator("name", "content", mode="before")
+    @classmethod
+    def strip_and_check_nonempty(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                raise ValueError("prompt 不能为空")
+        return value
+
+    @field_validator("group", "description", mode="before")
+    @classmethod
+    def strip_optional(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
+    @field_validator("id")
+    @classmethod
+    def validate_id(cls, value: str) -> str:
+        if (
+            not value
+            or len(value) != 12
+            or any(c not in "0123456789abcdef" for c in value)
+        ):
+            raise ValueError("id 必须是 12 位小写十六进制字符串")
+        return value

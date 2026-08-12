@@ -21,6 +21,7 @@ env/
 
 # Local data (keep directory placeholders)
 prompts/*.json
+prompts/repo/*.json
 exports/*.md
 exports/*.txt
 

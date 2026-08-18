@@ -330,11 +330,41 @@ def _pause_for_menu(hint: str = "按 ESC 或回车返回菜单…") -> None:
     console.print()
 
 
+_CSI_U_PATCHED = False
+
+
+def _patch_csi_u_shift_enter() -> None:
+    """把终端发来的 Shift+Enter 序列翻译为换行。
+
+    Windows Terminal 等现代终端对 Shift+Enter 发送 CSI-u(Kitty)序列
+    ``ESC [ 13 ; 2 u``,而 prompt_toolkit 3.0.x 不解析它,会把
+    ``^[[13;2u`` 逐字插入输入框,导致换行失效。这里在解析前将其替换为
+    ``\\n``,从而让 ``c-j`` 键绑定正常插入换行。
+    对发送 ``\\n`` 的终端无副作用(不匹配则原样通过)。
+    """
+    global _CSI_U_PATCHED
+    if _CSI_U_PATCHED:
+        return
+    try:
+        import prompt_toolkit.input.vt100_parser as _vt100
+    except Exception:  # noqa: BLE001
+        return
+    _orig_feed = _vt100.Vt100Parser.feed
+
+    def _feed(self, data):  # noqa: ANN001
+        data = data.replace("\x1b[13;2u", "\n")  # Shift+Enter
+        return _orig_feed(self, data)
+
+    _vt100.Vt100Parser.feed = _feed
+    _CSI_U_PATCHED = True
+
+
 def _read_line_or_escape(prompt: str) -> str | None:
     """读取一行输入,ESC / Ctrl+C / Ctrl+D 返回 None 表示取消。
 
     优先使用 prompt_toolkit:获得完整行编辑(退格、左右方向键、
-    Delete、Home/End、历史)与中文输入法支持,ESC 一键取消。
+    Delete、Home/End、历史)与中文输入法支持,ESC 一键取消;
+    Enter 确认,Shift+Enter 换行。
     prompt_toolkit 不可用或处于非交互环境(管道/CI/重定向)时,
     自动退化回标准 input()(此时仅支持系统自带行编辑,ESC 不可用,
     改用 Ctrl+C 取消)。
@@ -343,6 +373,7 @@ def _read_line_or_escape(prompt: str) -> str | None:
     返回 None,不在 handler 里抛异常(否则会冒泡到 prompt_toolkit
     事件循环报 "Unhandled exception")。
     """
+    _patch_csi_u_shift_enter()
     try:
         from prompt_toolkit import prompt as pt_prompt
         from prompt_toolkit.key_binding import KeyBindings
@@ -354,7 +385,20 @@ def _read_line_or_escape(prompt: str) -> str | None:
         def _on_esc(event):  # noqa: ANN001, ANN202
             event.app.exit(result=None)
 
-        return pt_prompt(prompt, key_bindings=kb)
+        @kb.add(Keys.Enter)
+        def _on_enter(event):  # noqa: ANN001, ANN202
+            event.current_buffer.validate_and_handle()
+
+        @kb.add(Keys.ControlJ)
+        def _on_shift_enter(event):  # noqa: ANN001, ANN202
+            event.current_buffer.insert_text("\n")
+
+        return pt_prompt(
+            prompt,
+            key_bindings=kb,
+            multiline=True,
+            prompt_continuation=lambda *_: "",  # 续行不缩进,避免被推到提示符右侧
+        )
     except (KeyboardInterrupt, EOFError):
         return None
     except Exception:  # noqa: BLE001
@@ -398,7 +442,7 @@ def optimize(
     if prompt is None:
         console.print(
             Panel(
-                "请输入要优化的提示词(单行,回车提交):\n"
+                "请输入要优化的提示词(回车提交,Ctrl+J 换行):\n"
                 "LLM 会分析问题、输出优化版、说明改动。",
                 title="优化提示词",
                 border_style="green",
@@ -406,7 +450,7 @@ def optimize(
             )
         )
         console.print()
-        entered = _read_line_or_escape("输入提示词: ")
+        entered = _read_line_or_escape("输入提示词(Ctrl+J 换行): ")
         if entered is None:
             console.print("[muted]已取消,返回菜单…[/muted]")
             console.print()
@@ -471,7 +515,7 @@ def _fmt_ts(dt: datetime) -> str:
 
 def _truncate_preview(text: str, max_len: int) -> str:
     """单行预览,超长用省略号截断。"""
-    text = text.replace("\n", " ").strip()
+    text = text.replace("\r", " ").replace("\n", " ").strip()
     if len(text) <= max_len:
         return text
     return text[: max_len - 1] + "…"
@@ -884,7 +928,7 @@ def _repo_add_interactive(store: RepoStore, default_group: str | None = None) ->
     if not name:
         err_console.print("[yellow]名称不能为空[/yellow]")
         return
-    content = _read_line_or_escape("正文(单行): ")
+    content = _read_line_or_escape("正文(Ctrl+J 换行): ")
     if content is None:
         console.print("[muted]已取消。[/muted]")
         return
@@ -902,7 +946,7 @@ def _repo_add_interactive(store: RepoStore, default_group: str | None = None) ->
         console.print("[muted]已取消。[/muted]")
         return
     group = group.strip() or default_group or None
-    description = _read_line_or_escape("备注(留空跳过): ")
+    description = _read_line_or_escape("备注(Ctrl+J 换行,留空跳过): ")
     if description is None:
         console.print("[muted]已取消。[/muted]")
         return
@@ -914,6 +958,66 @@ def _repo_add_interactive(store: RepoStore, default_group: str | None = None) ->
         group=group,
         description=description,
     )
+
+
+def _repo_edit_interactive(store: RepoStore, prompt: RepoPrompt) -> RepoPrompt | None:
+    """交互编辑已有提示词,ESC 取消,回车保持原值。"""
+    console.print(
+        Panel(
+            "回车保持原值;分组输入 !clear 可清除。",
+            title=f"编辑提示词 {prompt.id}",
+            border_style="cyan",
+            style=PANEL_STYLE,
+        )
+    )
+    console.print()
+
+    name = _read_line_or_escape(f"名称 [{prompt.name}]: ")
+    if name is None:
+        console.print("[muted]已取消。[/muted]")
+        return None
+    name = name.strip()
+    if not name:
+        name = prompt.name
+
+    content = _read_line_or_escape(f"正文 [{_truncate_preview(prompt.content, 30)}](Ctrl+J 换行): ")
+    if content is None:
+        console.print("[muted]已取消。[/muted]")
+        return None
+    content = content.strip()
+    if not content:
+        content = prompt.content
+
+    group_hint = f"分组 [{prompt.group or '未分组'}](!clear=清除): "
+    group = _read_line_or_escape(group_hint)
+    if group is None:
+        console.print("[muted]已取消。[/muted]")
+        return None
+    group = group.strip()
+    if group == "!clear":
+        group = ""
+    elif not group:
+        group = prompt.group or ""
+
+    desc_hint = f"备注 [{prompt.description or '无'}](Ctrl+J 换行): "
+    description = _read_line_or_escape(desc_hint)
+    if description is None:
+        console.print("[muted]已取消。[/muted]")
+        return None
+    description = description.strip()
+    if not description:
+        description = prompt.description
+
+    updated = store.update(
+        prompt.id,
+        name=name,
+        content=content,
+        group=group,
+        description=description,
+    )
+    console.print(f"[green]已更新:[/green] {store.repo_dir / f'{updated.id}.json'}")
+    console.print()
+    return updated
 
 
 def _repo_new_group_interactive(store: RepoStore) -> None:
@@ -1016,22 +1120,42 @@ def _repo_list_loop(
 
 
 def _repo_show_detail_actions(store: RepoStore, prompt: RepoPrompt) -> None:
-    """详情后的动作:回车返回,d 删除。"""
-    answer = _read_line_or_escape("回车=返回 · d=删除: ")
+    """详情后的动作:回车返回,e 编辑,d 删除。"""
+    answer = _read_line_or_escape("回车=返回 · e=编辑 · d=删除: ")
     if answer is None:
         return
-    if answer.strip().lower() in {"d", "delete", "删除"}:
+    lower = answer.strip().lower()
+    if lower in {"e", "edit", "编辑"}:
+        updated = _repo_edit_interactive(store, prompt)
+        if updated is not None:
+            console.print()
+            console.print(_render_repo_detail(updated))
+            console.print()
+            _repo_show_detail_actions(store, updated)
+        return
+    if lower in {"d", "delete", "删除"}:
         store.delete(prompt.id)
         console.print(f"[green]已删除:[/green] {prompt.id}")
         console.print()
 
 
 def repo_browse() -> None:
-    """交互式浏览 prompt 仓库:分组选择 → 分页列表 → 详情。"""
+    """交互式浏览 prompt 仓库:搜索/分组选择 → 分页列表 → 详情。"""
     store, _ = _repo_store_from_settings(require_api_key=False)
+
+    def _run_search(keyword: str) -> None:
+        kw = keyword.strip()
+        if not kw:
+            return
+        console.print()
+        _repo_list_loop(
+            store, lambda: store.search(kw), f"搜索: {kw}"
+        )
+
     while True:
         all_items = store.list_all()
-        choices: list[tuple[str, list[RepoPrompt]]] = [
+        choices: list[tuple[str, list[RepoPrompt] | None]] = [
+            ("搜索", None),
             ("全部", all_items),
             ("未分组", store.list_ungrouped()),
         ]
@@ -1042,6 +1166,7 @@ def repo_browse() -> None:
         name_w = max(_display_width(label) for label, _ in choices)
         for i, (label, items) in enumerate(choices, 1):
             pad = " " * (name_w - _display_width(label))
+            count_text = f"({len(items)})" if items is not None else ""
             console.print(
                 Text.assemble(
                     (f"  {i:<2} ", "key"),
@@ -1050,12 +1175,12 @@ def repo_browse() -> None:
                     (pad + "  ", "dim"),
                     ("─", "dim"),
                     ("  ", "dim"),
-                    (f"({len(items)})", "muted"),
+                    (count_text, "muted"),
                 )
             )
         console.print()
         console.print(
-            "[muted]序号=进入 · n=新增 · g=新建分组 · q=返回[/muted]",
+            "[muted]序号=进入 · s=搜索 · n=新增 · g=新建分组 · x=删除分组 · q=返回[/muted]",
             justify="center",
         )
         console.print()
@@ -1066,6 +1191,12 @@ def repo_browse() -> None:
         lower = choice.lower()
         if lower in {"q", "quit", "退出", "0"}:
             return
+        if lower in {"s", "search", "查询"}:
+            keyword = _read_line_or_escape("搜索关键词: ")
+            if keyword is None:
+                continue
+            _run_search(keyword)
+            continue
         if lower in {"n", "add", "新增"}:
             console.print()
             _repo_add_interactive(store)
@@ -1074,18 +1205,34 @@ def repo_browse() -> None:
             console.print()
             _repo_new_group_interactive(store)
             continue
+        if lower in {"x", "delgroup", "删除分组"}:
+            gname = _read_line_or_escape("要删除的分组名: ")
+            if gname is None:
+                continue
+            gname = gname.strip()
+            if gname:
+                store.delete_group(gname)
+                console.print(f"[green]已移除分组:[/green] {gname}")
+                console.print()
+            continue
         if choice.isdigit():
             n = int(choice)
             if 1 <= n <= len(choices):
-                label, _ = choices[n - 1]
+                label, items = choices[n - 1]
                 console.print()
-                _repo_list_loop(store, _scope_loader(store, label), label)
+                if label == "搜索":
+                    keyword = _read_line_or_escape("搜索关键词: ")
+                    if keyword is None:
+                        continue
+                    _run_search(keyword)
+                else:
+                    _repo_list_loop(store, _scope_loader(store, label), label)
                 console.print()
                 continue
             err_console.print(f"[yellow]序号超出范围 (1-{len(choices)})[/yellow]")
             continue
         err_console.print(
-            "[yellow]无效输入:序号进入 / n 新增 / g 新建分组 / q 返回[/yellow]"
+            "[yellow]无效输入:序号进入 / s=搜索 / n=新增 / g=新建分组 / x=删除分组 / q=返回[/yellow]"
         )
 
 
@@ -1155,6 +1302,48 @@ def repo_add(
         group=(group.strip() or None) if group else None,
         description=(description.strip() or None) if description else None,
     )
+
+
+@repo_app.command("update")
+def repo_update(
+    repo_id: str = typer.Argument(..., help="提示词 ID"),
+    name: Optional[str] = typer.Option(None, "--name", "-n", help="新名称"),
+    content: Optional[str] = typer.Option(None, "--content", "-c", help="新正文"),
+    group: Optional[str] = typer.Option(
+        None, "--group", "-g", help="新分组(传空串可清除分组)"
+    ),
+    description: Optional[str] = typer.Option(
+        None, "--description", "-d", help="新备注"
+    ),
+) -> None:
+    """修改仓库中某条提示词。未传字段保持原值。"""
+    store, _ = _repo_store_from_settings(require_api_key=False)
+    try:
+        prompt = store.load(repo_id)
+    except PromptNotFoundError as exc:
+        _exit_data(str(exc))
+        return
+    except PromptDataError as exc:
+        _exit_data(str(exc))
+        return
+
+    no_args = all(
+        opt is None for opt in (name, content, group, description)
+    )
+    if no_args:
+        updated = _repo_edit_interactive(store, prompt)
+        if updated is None:
+            return
+    else:
+        updated = store.update(
+            prompt.id,
+            name=(name.strip() or None) if name else None,
+            content=(content.strip() or None) if content else None,
+            group=(group.strip() or None) if group else None,
+            description=(description.strip() or None) if description else None,
+        )
+        console.print(f"[green]已更新:[/green] {updated.id}")
+        console.print()
 
 
 @repo_app.command("list")

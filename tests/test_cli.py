@@ -389,6 +389,43 @@ def test_read_line_fallback_ctrl_c_returns_none(monkeypatch: pytest.MonkeyPatch)
     assert _read_line_or_escape("x: ") is None
 
 
+def test_csi_u_shift_enter_parsed_as_newline() -> None:
+    """Windows Terminal 的 Shift+Enter(CSI-u 序列)应被解析为换行 c-j。"""
+    from prompt_gen import cli
+    from prompt_toolkit.input.vt100_parser import Vt100Parser
+
+    cli._patch_csi_u_shift_enter()
+    keys: list = []
+    parser = Vt100Parser(keys.append)
+    parser.feed("\x1b[13;2u")
+    parser.flush()
+    assert keys and keys[0].key.value == "c-j"
+    assert keys[0].data == "\n"
+
+
+def test_truncate_preview_strips_cr_lf() -> None:
+    """预览不应泄漏 \\r/\\n 控制字符(否则渲染会把光标拉回行首)。"""
+    from prompt_gen.cli import _truncate_preview
+
+    out = _truncate_preview("a\r\nb\r\nc", 10)
+    assert "\r" not in out
+    assert "\n" not in out
+
+
+def test_csi_u_patch_leaves_plain_input_unchanged() -> None:
+    """补丁不影响普通字符与回车。"""
+    from prompt_gen import cli
+    from prompt_toolkit.input.vt100_parser import Vt100Parser
+
+    cli._patch_csi_u_shift_enter()
+    keys: list = []
+    parser = Vt100Parser(keys.append)
+    parser.feed("ab\r")
+    parser.flush()
+    values = [getattr(k.key, "value", k.key) for k in keys]
+    assert values == ["a", "b", "c-m"]
+
+
 # -- prompt 仓库 --
 
 REPO_DIR_HINT = "history"  # cli_env 中 PROMPT_GEN_DATA_DIR 的子目录名
@@ -418,6 +455,19 @@ def test_repo_add_missing_name_exits_2(cli_env: Path) -> None:
         app, ["repo", "add", "--content", "正文"]
     )
     assert result.exit_code == 2
+
+
+def test_repo_add_interactive_prompts_multiline_hint(cli_env: Path) -> None:
+    """交互添加:正文/备注提示包含 Ctrl+J 换行提示,回车确认后保存。"""
+    result = runner.invoke(
+        app, ["repo", "add"], input="测试名\n多行正文\n\n\n"
+    )
+    assert result.exit_code == 0, result.output
+    assert "Ctrl+J 换行" in result.output
+    store = _repo_store(cli_env)
+    assert len(store.list_all()) == 1
+    assert store.list_all()[0].name == "测试名"
+    assert store.list_all()[0].content == "多行正文"
 
 
 def test_repo_list_empty(cli_env: Path) -> None:
@@ -509,3 +559,69 @@ def test_repo_interactive_browse_add(cli_env: Path) -> None:
     result = runner.invoke(app, ["repo"], input="1\nq\n")
     assert result.exit_code == 0, result.output
     assert "prompt 仓库" in result.output
+
+
+def test_repo_update_changes_field(cli_env: Path) -> None:
+    runner.invoke(
+        app, ["repo", "add", "--name", "原名", "--content", "正文"]
+    )
+    store = _repo_store(cli_env)
+    repo_id = store.list_all()[0].id
+    result = runner.invoke(
+        app, ["repo", "update", repo_id, "--name", "新名"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "已更新" in result.output
+    updated = store.load(repo_id)
+    assert updated.name == "新名"
+    assert updated.content == "正文"  # 未传字段保持
+
+
+def test_repo_update_missing_exits_3(cli_env: Path) -> None:
+    result = runner.invoke(
+        app, ["repo", "update", "abcdef123456", "--name", "x"]
+    )
+    assert result.exit_code == 3
+
+
+def test_repo_update_no_args_interactive(cli_env: Path) -> None:
+    runner.invoke(
+        app, ["repo", "add", "--name", "原名", "--content", "正文"]
+    )
+    store = _repo_store(cli_env)
+    repo_id = store.list_all()[0].id
+    # 全部回车保持原值
+    result = runner.invoke(app, ["repo", "update", repo_id], input="\n\n\n\n")
+    assert result.exit_code == 0, result.output
+    assert "已更新" in result.output
+    assert store.load(repo_id).name == "原名"
+
+
+def test_repo_group_delete_command(cli_env: Path) -> None:
+    runner.invoke(app, ["repo", "group", "add", "项目A"])
+    result = runner.invoke(app, ["repo", "group", "delete", "项目A"])
+    assert result.exit_code == 0, result.output
+    assert "已移除分组" in result.output
+    store = _repo_store(cli_env)
+    assert "项目A" not in store.list_groups()
+
+
+def test_repo_interactive_browse_search(cli_env: Path) -> None:
+    """交互浏览:分组屏选 1(搜索)→ 输入关键词 → q 退出。"""
+    runner.invoke(
+        app, ["repo", "add", "--name", "代码审查", "--content", "检查质量"]
+    )
+    result = runner.invoke(app, ["repo"], input="1\n审查\nq\n")
+    assert result.exit_code == 0, result.output
+    assert "搜索" in result.output
+    assert "代码审查" in result.output
+
+
+def test_repo_interactive_browse_delete_group(cli_env: Path) -> None:
+    """交互浏览:x 删除空分组后该分组不再列出。"""
+    runner.invoke(app, ["repo", "group", "add", "项目A"])
+    result = runner.invoke(app, ["repo"], input="x\n项目A\nq\n")
+    assert result.exit_code == 0, result.output
+    assert "已移除分组" in result.output
+    store = _repo_store(cli_env)
+    assert "项目A" not in store.list_groups()
